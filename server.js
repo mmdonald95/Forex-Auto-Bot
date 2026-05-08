@@ -22,6 +22,7 @@ const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const defaultProfileName = process.env.DEFAULT_PROFILE_NAME || "Marcello Gambino";
 const defaultProfileEmail = process.env.DEFAULT_PROFILE_EMAIL || "marcello@example.com";
+const forexFetchTimeoutMs = Number(process.env.FOREXCOM_FETCH_TIMEOUT_MS || 8000);
 
 const sessions = new Map();
 const marginCache = new Map();
@@ -144,8 +145,10 @@ function readBody(req) {
 }
 
 async function postJson(url, body, headers = {}) {
+  const signal = AbortSignal.timeout(forexFetchTimeoutMs);
   const response = await fetch(url, {
     method: "POST",
+    signal,
     headers: {
       "Content-Type": "application/json",
       Accept: "application/json",
@@ -166,8 +169,10 @@ async function postJson(url, body, headers = {}) {
 }
 
 async function getJson(url, headers = {}) {
+  const signal = AbortSignal.timeout(forexFetchTimeoutMs);
   const response = await fetch(url, {
     method: "GET",
+    signal,
     headers: {
       Accept: "application/json",
       ...headers,
@@ -1058,11 +1063,17 @@ async function handleForexSnapshot(req, res, url) {
 
     const tradingAccountId = tradingAccount.tradingAccountId;
     const auth = forexHeaders(session);
-    const [positions, activeOrders, tradeHistory] = await Promise.all([
+    const [positionsResult, activeOrdersResult, tradeHistoryResult] = await Promise.allSettled([
       getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
       getJson(`${apiBase}/order/activestoplimitorders?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
       getJson(`${apiBase}/order/tradehistory?${buildQuery({ TradingAccountId: tradingAccountId, MaxResults: 25 })}`, auth),
     ]);
+    const positions = positionsResult.status === "fulfilled" ? positionsResult.value : {};
+    const activeOrders = activeOrdersResult.status === "fulfilled" ? activeOrdersResult.value : {};
+    const tradeHistory = tradeHistoryResult.status === "fulfilled" ? tradeHistoryResult.value : {};
+    const warnings = [positionsResult, activeOrdersResult, tradeHistoryResult]
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason.message);
 
     sendJson(res, 200, {
       ok: true,
@@ -1073,6 +1084,7 @@ async function handleForexSnapshot(req, res, url) {
       positions: normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]),
       activeOrders: normalizeList(activeOrders, ["ActiveStopLimitOrders", "Orders", "StopLimitOrders"]),
       tradeHistory: normalizeList(tradeHistory, ["TradeHistory", "Trades", "Orders"]),
+      warnings,
     });
   } catch (error) {
     sendJson(res, 502, {

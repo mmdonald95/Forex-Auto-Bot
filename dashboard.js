@@ -100,6 +100,31 @@ async function readJsonResponse(response) {
   return text ? JSON.parse(text) : {};
 }
 
+async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("Request timed out. Refresh or sign in again if the FOREX.com session expired.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
+function on(element, eventName, handler) {
+  if (element) {
+    element.addEventListener(eventName, handler);
+  }
+}
+
 function setRows(container, items, columns, emptyText) {
   container.innerHTML = "";
 
@@ -284,8 +309,15 @@ async function loadSnapshot() {
   }
 
   dashboardStatus.textContent = "Refreshing FOREX.com account data...";
-  const response = await fetch(`/api/forexcom/snapshot?sessionId=${encodeURIComponent(sessionId)}`);
-  const data = await readJsonResponse(response);
+  let response;
+  let data;
+  try {
+    response = await fetchWithTimeout(`/api/forexcom/snapshot?sessionId=${encodeURIComponent(sessionId)}`);
+    data = await readJsonResponse(response);
+  } catch (error) {
+    dashboardStatus.textContent = error.message;
+    return;
+  }
 
   if (!response.ok || !data.ok) {
     dashboardStatus.textContent = data.error || "Unable to load account data.";
@@ -324,8 +356,8 @@ async function loadSnapshot() {
   const made = sumPositive(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]);
   const spent = sumNegativeAbs(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]) || estimateOpenCost(positions);
 
-  dashboardStatus.textContent = data.warning
-    ? `${data.warning} Loading live FOREX.com margin balance...`
+  dashboardStatus.textContent = data.warning || data.warnings?.length
+    ? `${data.warning || data.warnings.join(" ")} Loading live FOREX.com margin balance...`
     : "Dashboard synced. Loading live FOREX.com margin balance...";
   accountValue.textContent = possibleBalance === null ? "--" : money(possibleBalance, currency);
   moneyMade.textContent = money(made || null, currency);
@@ -365,12 +397,12 @@ async function loadSnapshot() {
     "No trade history returned."
   );
 
-  await loadMargin(currency);
+  loadMargin(currency);
 }
 
 async function loadMargin(currency = "USD") {
   try {
-    const response = await fetch(`/api/forexcom/margin?sessionId=${encodeURIComponent(sessionId)}`);
+    const response = await fetchWithTimeout(`/api/forexcom/margin?sessionId=${encodeURIComponent(sessionId)}`, {}, 12000);
     const data = await readJsonResponse(response);
 
     if (!response.ok || !data.ok) {
@@ -471,7 +503,7 @@ async function loadCandles(formData = new FormData(candlesForm)) {
 
 async function loadDemoPositions() {
   try {
-    const response = await fetch("/api/demo/positions");
+    const response = await fetchWithTimeout("/api/demo/positions", {}, 10000);
     const data = await readJsonResponse(response);
     if (!response.ok || !data.ok) {
       throw new Error(data.error || "Unable to load demo positions.");
@@ -538,7 +570,7 @@ async function markDemoPositions() {
 
 async function loadSupabaseCheck() {
   try {
-    const response = await fetch("/api/supabase/check");
+    const response = await fetchWithTimeout("/api/supabase/check", {}, 10000);
     const data = await readJsonResponse(response);
 
     if (!response.ok || !data.ok) {
@@ -551,11 +583,13 @@ async function loadSupabaseCheck() {
     dbSettings.textContent = data.counts?.botSettings ?? "--";
     dbTrades.textContent = data.counts?.tradeLogs ?? "--";
   } catch (error) {
-    supabaseDbStatus.textContent = error.message;
+    if (supabaseDbStatus) {
+      supabaseDbStatus.textContent = error.message;
+    }
   }
 }
 
-settingsForm.addEventListener("submit", async (event) => {
+on(settingsForm, "submit", async (event) => {
   event.preventDefault();
   settingsStatus.textContent = "Saving...";
   const formData = new FormData(settingsForm);
@@ -636,30 +670,40 @@ async function runBotRequest(endpoint, statusText) {
   }
 }
 
-runBotButton.addEventListener("click", async () => {
+on(runBotButton, "click", async () => {
   await runBotRequest("/api/bot/run", "Running EUR/USD simulation...");
 });
 
-scanBotButton.addEventListener("click", async () => {
+on(scanBotButton, "click", async () => {
   await runBotRequest("/api/bot/scan", "Scanning top 15 pairs...");
 });
 
-refreshPricesButton.addEventListener("click", loadLivePrices);
-candlesForm.addEventListener("submit", (event) => {
+on(refreshPricesButton, "click", loadLivePrices);
+on(candlesForm, "submit", (event) => {
   event.preventDefault();
   loadCandles(new FormData(candlesForm));
 });
-demoRefreshButton.addEventListener("click", loadDemoPositions);
-demoOpenButton.addEventListener("click", openDemoPosition);
-demoMarkButton.addEventListener("click", markDemoPositions);
+on(demoRefreshButton, "click", loadDemoPositions);
+on(demoOpenButton, "click", openDemoPosition);
+on(demoMarkButton, "click", markDemoPositions);
 
-refreshButton.addEventListener("click", loadSnapshot);
-marketForm.addEventListener("submit", (event) => {
+on(refreshButton, "click", loadSnapshot);
+on(marketForm, "submit", (event) => {
   event.preventDefault();
   const formData = new FormData(marketForm);
   searchMarkets(formData.get("query") || "EUR/USD");
 });
 
-loadSnapshot();
-loadSupabaseCheck();
-loadDemoPositions();
+loadSnapshot().catch((error) => {
+  dashboardStatus.textContent = error.message;
+});
+loadSupabaseCheck().catch((error) => {
+  if (supabaseDbStatus) {
+    supabaseDbStatus.textContent = error.message;
+  }
+});
+loadDemoPositions().catch((error) => {
+  if (demoStatus) {
+    demoStatus.textContent = error.message;
+  }
+});
