@@ -76,6 +76,11 @@ function maskSecret(value) {
 }
 
 function writeDebug(event, payload) {
+  if (process.env.VERCEL) {
+    console.log(JSON.stringify({ event, payload }));
+    return;
+  }
+
   fs.mkdirSync(logDir, { recursive: true });
   const entry = {
     time: new Date().toISOString(),
