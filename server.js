@@ -26,6 +26,7 @@ const defaultProfileEmail = process.env.DEFAULT_PROFILE_EMAIL || "marcello@examp
 const sessions = new Map();
 const marginCache = new Map();
 const priceCache = new Map();
+const demoPositions = new Map();
 let supabaseAdminClient;
 const logDir = path.join(root, "logs");
 const forexDebugLog = path.join(logDir, "forex-debug.jsonl");
@@ -169,6 +170,10 @@ async function getJson(url, headers = {}) {
   });
 
   const text = await response.text();
+  const contentType = response.headers.get("content-type") || "";
+  if (!contentType.includes("application/json")) {
+    throw new Error(`Expected JSON from ${url}, got ${response.status} ${response.statusText}: ${text.replace(/\s+/g, " ").trim().slice(0, 180)}`);
+  }
   const data = text ? JSON.parse(text) : {};
 
   if (!response.ok) {
@@ -475,14 +480,18 @@ function marketNameMatches(market, targetName) {
 }
 
 async function findMarket(session, marketName) {
-  const accountBase = apiBase.replace(/\/TradingAPI$/i, "");
   const query = buildQuery({
-    MarketName: marketName,
+    SearchByMarketName: true,
+    Query: marketName,
     MaxResults: 15,
+    IncludeOptions: false,
+    CfdProductType: true,
+    SpreadProductType: false,
+    BinaryProductType: false,
     ClientAccountId: session.account.clientAccountId,
   });
-  const data = await getJson(`${accountBase}/cfd/markets?${query}`, forexHeaders(session));
-  const markets = normalizeList(data, ["Markets", "CFDMarkets", "CfdMarkets"]);
+  const data = await getJson(`${apiBase}/market/search?${query}`, forexHeaders(session));
+  const markets = normalizeList(data, ["Markets", "MarketInformation", "SearchResults", "Results"]);
   const market = markets.find((item) => marketNameMatches(item, marketName)) || markets[0];
 
   if (!market) {
@@ -592,7 +601,6 @@ function normalizeBars(data) {
 
 async function getPriceBars({ session, marketName = "EUR/USD", interval = "MINUTE", span = 15, maxResults = 80 }) {
   const market = await findMarket(session, marketName);
-  const accountBase = apiBase.replace(/\/TradingAPI$/i, "");
   const fromTimestampUTC = Math.floor(Date.now() / 1000) - (60 * Number(span) * Math.max(Number(maxResults), 20));
   const query = buildQuery({
     interval,
@@ -602,7 +610,7 @@ async function getPriceBars({ session, marketName = "EUR/USD", interval = "MINUT
     priceType: "MID",
     ClientAccountId: session.account.clientAccountId,
   });
-  const data = await getJson(`${accountBase}/market/${market.marketId}/barhistoryafter?${query}`, forexHeaders(session));
+  const data = await getJson(`${apiBase}/market/${market.marketId}/barhistoryafter?${query}`, forexHeaders(session));
 
   return {
     market,
@@ -635,6 +643,55 @@ function runLivePriceDecision({ price, riskPerTrade = 1.5, dailyStop = 4, balanc
   }
 
   return decision;
+}
+
+function getDemoPositions(profileId) {
+  if (!demoPositions.has(profileId)) {
+    demoPositions.set(profileId, []);
+  }
+
+  return demoPositions.get(profileId);
+}
+
+function evaluateDemoPosition(position, currentPrice) {
+  const isBuy = position.direction === "BUY";
+  const hitTarget = isBuy ? currentPrice >= position.takeProfit : currentPrice <= position.takeProfit;
+  const hitStop = isBuy ? currentPrice <= position.stopLoss : currentPrice >= position.stopLoss;
+  const priceDifference = isBuy ? currentPrice - position.entryPrice : position.entryPrice - currentPrice;
+  const targetDifference = Math.abs(position.takeProfit - position.entryPrice) || 1;
+  const estimatedProfitLoss = (priceDifference / targetDifference) * position.expectedProfit;
+
+  return {
+    hitTarget,
+    hitStop,
+    estimatedProfitLoss,
+  };
+}
+
+async function logDemoTrade({ profile, position, status, currentPrice, profitLoss, reason }) {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("trade_logs")
+    .insert({
+      profile_id: profile.id,
+      broker_order_id: position.id,
+      market: position.market,
+      direction: position.direction,
+      quantity: position.riskAmount,
+      entry_price: position.entryPrice,
+      exit_price: currentPrice ?? null,
+      profit_loss: profitLoss ?? null,
+      status,
+      reason,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
 }
 
 async function runCandleStrategy({ session, market, riskPerTrade, dailyStop, balance, rewardRiskRatio }) {
@@ -852,8 +909,31 @@ async function handleForexConfig(req, res) {
   sendJson(res, 200, {
     ok: true,
     apiBase,
+    streamingBase,
     hasAppKey: Boolean(forexComAppKey),
     appKey: maskSecret(forexComAppKey),
+    runtime: process.env.VERCEL ? "vercel" : "local",
+  });
+}
+
+async function handleHealth(req, res) {
+  sendJson(res, 200, {
+    ok: true,
+    runtime: process.env.VERCEL ? "vercel" : "local",
+    node: process.version,
+    env: {
+      hasForexApiBase: Boolean(apiBase),
+      hasForexStreamingBase: Boolean(streamingBase),
+      hasForexAppKey: Boolean(forexComAppKey),
+      hasSupabaseUrl: Boolean(supabaseUrl),
+      hasSupabaseServiceRoleKey: Boolean(supabaseServiceRoleKey),
+    },
+    files: {
+      index: fs.existsSync(path.join(root, "index.html")),
+      signin: fs.existsSync(path.join(root, "signin.html")),
+      dashboard: fs.existsSync(path.join(root, "dashboard.html")),
+      styles: fs.existsSync(path.join(root, "styles.css")),
+    },
   });
 }
 
@@ -998,21 +1078,23 @@ async function handleForexMarkets(req, res, url) {
       return;
     }
 
-    const tradingAccount = getPrimaryTradingAccount(session.account);
     const query = url.searchParams.get("query") || "EUR/USD";
-    const accountBase = apiBase.replace(/\/TradingAPI$/i, "");
     const marketQuery = buildQuery({
-      MarketName: query,
+      SearchByMarketName: true,
+      Query: query,
       MaxResults: 10,
+      IncludeOptions: false,
+      CfdProductType: true,
+      SpreadProductType: false,
+      BinaryProductType: false,
       ClientAccountId: session.account.clientAccountId,
     });
-    const data = await getJson(`${accountBase}/cfd/markets?${marketQuery}`, forexHeaders(session));
+    const data = await getJson(`${apiBase}/market/search?${marketQuery}`, forexHeaders(session));
 
     sendJson(res, 200, {
       ok: true,
       query,
-      tradingAccount,
-      markets: normalizeList(data, ["Markets", "CFDMarkets", "CfdMarkets"]),
+      markets: normalizeList(data, ["Markets", "MarketInformation", "SearchResults", "Results"]),
       raw: data,
     });
   } catch (error) {
@@ -1452,6 +1534,207 @@ async function handleBotScan(req, res) {
   }
 }
 
+async function handleDemoPositions(req, res) {
+  try {
+    const profile = await getOrCreateDefaultProfile();
+    const positions = getDemoPositions(profile.id);
+    const openPositions = positions.filter((position) => position.status === "open");
+    const closedPositions = positions.filter((position) => position.status === "closed");
+    const realizedProfitLoss = closedPositions.reduce((total, position) => total + Number(position.profitLoss || 0), 0);
+
+    sendJson(res, 200, {
+      ok: true,
+      summary: {
+        openCount: openPositions.length,
+        closedCount: closedPositions.length,
+        realizedProfitLoss,
+      },
+      positions,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
+async function handleDemoOpen(req, res) {
+  try {
+    const body = JSON.parse((await readBody(req)) || "{}");
+    const profile = await getOrCreateDefaultProfile();
+    const positions = getDemoPositions(profile.id);
+    const session = getStoredSession(body.sessionId);
+    const cachedMargin = session?.account?.clientAccountId ? marginCache.get(session.account.clientAccountId) : null;
+    const balanceInfo = pickMarginBalance(cachedMargin);
+    const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
+    const dailyStop = Number(body.dailyStop ?? 4);
+    const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
+    const market = body.market || "EUR/USD";
+    let decision;
+
+    if (session) {
+      try {
+        decision = await runCandleStrategy({
+          session,
+          market,
+          riskPerTrade,
+          dailyStop,
+          rewardRiskRatio,
+          balance: balanceInfo?.value || 0,
+        });
+      } catch (error) {
+        writeDebug("demo-open-candle-fallback", { market, error: error.message });
+      }
+    }
+
+    decision ||= runMovingAverageStrategy({
+      market,
+      riskPerTrade,
+      dailyStop,
+      rewardRiskRatio,
+      balance: balanceInfo?.value || 0,
+    });
+
+    if (!["BUY", "SELL"].includes(decision.direction)) {
+      const tradeLog = await logDemoTrade({
+        profile,
+        position: {
+          id: `demo-${crypto.randomUUID()}`,
+          market,
+          direction: decision.direction,
+          riskAmount: decision.riskAmount,
+          entryPrice: decision.lastPrice,
+        },
+        status: "demo_no_trade",
+        currentPrice: decision.lastPrice,
+        profitLoss: 0,
+        reason: `No demo position opened: ${decision.reason}`,
+      });
+
+      sendJson(res, 200, {
+        ok: true,
+        opened: false,
+        decision,
+        tradeLog,
+      });
+      return;
+    }
+
+    const position = {
+      id: `demo-${crypto.randomUUID()}`,
+      status: "open",
+      market: decision.market,
+      direction: decision.direction,
+      entryPrice: decision.lastPrice,
+      stopLoss: decision.suggestedStop,
+      takeProfit: decision.suggestedTakeProfit,
+      riskAmount: decision.expectedRisk,
+      expectedProfit: decision.expectedProfit,
+      openedAt: new Date().toISOString(),
+      priceSource: decision.priceSource,
+      reason: decision.reason,
+    };
+    positions.push(position);
+
+    const tradeLog = await logDemoTrade({
+      profile,
+      position,
+      status: "demo_open",
+      currentPrice: position.entryPrice,
+      profitLoss: null,
+      reason: `Demo position opened. ${decision.reason}`,
+    });
+
+    sendJson(res, 200, {
+      ok: true,
+      opened: true,
+      position,
+      decision,
+      tradeLog,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
+async function handleDemoMark(req, res) {
+  try {
+    const body = JSON.parse((await readBody(req)) || "{}");
+    const profile = await getOrCreateDefaultProfile();
+    const positions = getDemoPositions(profile.id);
+    const session = getStoredSession(body.sessionId);
+    const openPositions = positions.filter((position) => position.status === "open");
+    const updates = [];
+
+    for (const position of openPositions) {
+      let currentPrice = Number(body.currentPrice);
+      if (!Number.isFinite(currentPrice) && session) {
+        try {
+          const result = await getPriceBars({
+            session,
+            marketName: position.market,
+            interval: "MINUTE",
+            span: 5,
+            maxResults: 5,
+          });
+          currentPrice = result.bars.at(-1)?.close;
+        } catch (error) {
+          writeDebug("demo-mark-price-error", { market: position.market, error: error.message });
+        }
+      }
+
+      if (!Number.isFinite(currentPrice)) {
+        continue;
+      }
+
+      const evaluation = evaluateDemoPosition(position, currentPrice);
+      position.currentPrice = currentPrice;
+      position.unrealizedProfitLoss = Number(evaluation.estimatedProfitLoss.toFixed(2));
+      position.updatedAt = new Date().toISOString();
+
+      if (evaluation.hitTarget || evaluation.hitStop) {
+        position.status = "closed";
+        position.closedAt = new Date().toISOString();
+        position.exitPrice = currentPrice;
+        position.profitLoss = Number((evaluation.hitTarget ? position.expectedProfit : -position.riskAmount).toFixed(2));
+        const tradeLog = await logDemoTrade({
+          profile,
+          position,
+          status: evaluation.hitTarget ? "demo_take_profit" : "demo_stop_loss",
+          currentPrice,
+          profitLoss: position.profitLoss,
+          reason: evaluation.hitTarget ? "Demo take profit reached." : "Demo stop loss reached.",
+        });
+        updates.push({ position, tradeLog });
+      } else {
+        updates.push({ position });
+      }
+    }
+
+    const closedPositions = positions.filter((position) => position.status === "closed");
+    const realizedProfitLoss = closedPositions.reduce((total, position) => total + Number(position.profitLoss || 0), 0);
+
+    sendJson(res, 200, {
+      ok: true,
+      updates,
+      summary: {
+        openCount: positions.filter((position) => position.status === "open").length,
+        closedCount: closedPositions.length,
+        realizedProfitLoss,
+      },
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
 function serveStatic(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const requestedPath = decodeURIComponent(url.pathname === "/" ? "/index.html" : url.pathname);
@@ -1488,6 +1771,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/config") {
     handleForexConfig(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/health") {
+    handleHealth(req, res);
     return;
   }
 
@@ -1558,6 +1846,21 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && url.pathname === "/api/bot/scan") {
     handleBotScan(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/demo/positions") {
+    handleDemoPositions(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/demo/open") {
+    handleDemoOpen(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/demo/mark") {
+    handleDemoMark(req, res);
     return;
   }
 
