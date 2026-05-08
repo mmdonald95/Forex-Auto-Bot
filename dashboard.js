@@ -49,6 +49,16 @@ const livePricesList = document.querySelector("[data-live-prices-list]");
 const candlesForm = document.querySelector("[data-candles-form]");
 const candlesStatus = document.querySelector("[data-candles-status]");
 const candlesChart = document.querySelector("[data-candles-chart]");
+const demoStatus = document.querySelector("[data-demo-status]");
+const demoRefreshButton = document.querySelector("[data-demo-refresh]");
+const demoOpenButton = document.querySelector("[data-demo-open]");
+const demoMarkButton = document.querySelector("[data-demo-mark]");
+const demoOpenCount = document.querySelector("[data-demo-open-count]");
+const demoClosedCount = document.querySelector("[data-demo-closed-count]");
+const demoRealized = document.querySelector("[data-demo-realized]");
+const demoUpdated = document.querySelector("[data-demo-updated]");
+const demoTableStatus = document.querySelector("[data-demo-table-status]");
+const demoList = document.querySelector("[data-demo-list]");
 
 function firstValue(item, names, fallback = "--") {
   for (const name of names) {
@@ -135,6 +145,41 @@ function setPriceRows(prices) {
       row.appendChild(cell);
     }
     livePricesList.appendChild(row);
+  }
+}
+
+function renderDemoPositions(data) {
+  const positions = data.positions || [];
+  demoOpenCount.textContent = data.summary?.openCount ?? 0;
+  demoClosedCount.textContent = data.summary?.closedCount ?? 0;
+  demoRealized.textContent = money(data.summary?.realizedProfitLoss ?? 0, accountCurrency.textContent || "USD");
+  demoUpdated.textContent = new Date().toLocaleTimeString();
+  demoTableStatus.textContent = `${positions.length} position(s)`;
+  demoList.innerHTML = "";
+
+  if (!positions.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No demo positions yet.";
+    demoList.appendChild(empty);
+    return;
+  }
+
+  for (const position of positions.slice().reverse().slice(0, 10)) {
+    const row = document.createElement("div");
+    row.className = "data-row";
+    const values = [
+      position.market,
+      position.direction,
+      position.status,
+      position.entryPrice,
+    ];
+    for (const value of values) {
+      const cell = document.createElement("span");
+      cell.textContent = value ?? "--";
+      row.appendChild(cell);
+    }
+    demoList.appendChild(row);
   }
 }
 
@@ -282,7 +327,7 @@ async function loadSnapshot() {
   dashboardStatus.textContent = data.warning
     ? `${data.warning} Loading live FOREX.com margin balance...`
     : "Dashboard synced. Loading live FOREX.com margin balance...";
-  accountValue.textContent = money(possibleBalance, currency);
+  accountValue.textContent = possibleBalance === null ? "--" : money(possibleBalance, currency);
   moneyMade.textContent = money(made || null, currency);
   moneySpent.textContent = money(spent || null, currency);
   openCount.textContent = positions.length;
@@ -334,11 +379,15 @@ async function loadMargin(currency = "USD") {
       return;
     }
 
-    accountValue.textContent = money(data.balance?.value, currency);
+    if (data.balance?.value !== null && data.balance?.value !== undefined) {
+      accountValue.textContent = money(data.balance.value, currency);
+    }
     balanceSource.textContent = data.balance?.key
       ? `CLIENTACCOUNTMARGIN.${data.balance.key}`
       : "CLIENTACCOUNTMARGIN returned no known balance field";
-    dashboardStatus.textContent = data.balance?.key
+    dashboardStatus.textContent = data.warning
+      ? `Using fallback balance. Streaming warning: ${data.warning}`
+      : data.balance?.key
       ? "Live FOREX.com account value loaded from streaming margin data."
       : "Connected, but FOREX.com did not return a recognized balance field.";
   } catch (error) {
@@ -417,6 +466,73 @@ async function loadCandles(formData = new FormData(candlesForm)) {
   } catch (error) {
     candlesStatus.textContent = error.message;
     drawCandles([]);
+  }
+}
+
+async function loadDemoPositions() {
+  try {
+    const response = await fetch("/api/demo/positions");
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to load demo positions.");
+    }
+    demoStatus.textContent = "Demo P/L loaded.";
+    renderDemoPositions(data);
+  } catch (error) {
+    demoStatus.textContent = error.message;
+  }
+}
+
+async function openDemoPosition() {
+  demoStatus.textContent = "Opening simulated position...";
+  const formData = new FormData(settingsForm);
+  const payload = {
+    sessionId,
+    market: "EUR/USD",
+    riskPerTrade: formData.get("riskPerTrade") || 1.5,
+    dailyStop: formData.get("dailyStop") || 4,
+    rewardRiskRatio: formData.get("rewardRiskRatio") || 2,
+  };
+
+  try {
+    const response = await fetch("/api/demo/open", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to open demo position.");
+    }
+    demoStatus.textContent = data.opened ? "Demo position opened." : "No trade opened; signal was HOLD.";
+    await loadDemoPositions();
+    await loadSupabaseCheck();
+  } catch (error) {
+    demoStatus.textContent = error.message;
+  }
+}
+
+async function markDemoPositions() {
+  demoStatus.textContent = "Marking open demo positions...";
+  try {
+    const response = await fetch("/api/demo/mark", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ sessionId }),
+    });
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to mark demo positions.");
+    }
+    demoStatus.textContent = "Demo positions marked.";
+    await loadDemoPositions();
+    await loadSupabaseCheck();
+  } catch (error) {
+    demoStatus.textContent = error.message;
   }
 }
 
@@ -533,6 +649,9 @@ candlesForm.addEventListener("submit", (event) => {
   event.preventDefault();
   loadCandles(new FormData(candlesForm));
 });
+demoRefreshButton.addEventListener("click", loadDemoPositions);
+demoOpenButton.addEventListener("click", openDemoPosition);
+demoMarkButton.addEventListener("click", markDemoPositions);
 
 refreshButton.addEventListener("click", loadSnapshot);
 marketForm.addEventListener("submit", (event) => {
@@ -543,3 +662,4 @@ marketForm.addEventListener("submit", (event) => {
 
 loadSnapshot();
 loadSupabaseCheck();
+loadDemoPositions();

@@ -1095,7 +1095,7 @@ async function handleForexMargin(req, res, url) {
     }
 
     const clientAccountId = session.account.clientAccountId;
-    const cached = marginCache.get(clientAccountId);
+    const cached = marginCache.get(clientAccountId) || session.account.margin || session.account.cachedMargin;
     if (cached) {
       sendJson(res, 200, {
         ok: true,
@@ -1135,10 +1135,38 @@ async function handleForexMargin(req, res, url) {
     });
   } catch (error) {
     writeDebug("forex-margin-error", { error: error.message });
+    const session = await getStoredSession(new URL(req.url, `http://${req.headers.host}`).searchParams.get("sessionId"));
+    const fallbackBalance = firstPresent(
+      session?.account?.cash,
+      session?.account?.balance,
+      session?.account?.accountValue,
+      session?.account?.netEquity,
+      session?.account?.availableToTrade,
+      session?.account?.clientAccountBalance
+    );
+    if (fallbackBalance !== undefined && fallbackBalance !== null) {
+      sendJson(res, 200, {
+        ok: true,
+        source: "account snapshot fallback",
+        margin: {
+          AccountValue: fallbackBalance,
+          receivedAt: new Date().toISOString(),
+        },
+        balance: {
+          key: "AccountValue",
+          value: Number(fallbackBalance),
+        },
+        warning: error.message,
+      });
+      return;
+    }
+
     sendJson(res, 502, {
       ok: false,
       error: error.message,
-      hint: "FOREX.com account value comes from the CLIENTACCOUNTMARGIN Lightstreamer stream. Confirm streaming access is enabled for this account and use http://localhost:3000, not file://.",
+      hint: process.env.VERCEL
+        ? "FOREX.com account value comes from a Lightstreamer margin stream, which may not work reliably in Vercel serverless. The website is online, but the trading engine should move to an always-on backend for live streaming."
+        : "FOREX.com account value comes from the CLIENTACCOUNTMARGIN Lightstreamer stream. Confirm streaming access is enabled for this account and use http://localhost:3000, not file://.",
     });
   }
 }
