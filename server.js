@@ -261,6 +261,80 @@ async function saveBrokerConnection({ forexUsername, isDemo = true }) {
   return { profile, brokerConnection: data };
 }
 
+async function saveForexSession({ localSessionId, username, sessionToken, account }) {
+  const supabase = await getSupabaseAdmin();
+  const profile = await getOrCreateDefaultProfile();
+  const expiresAt = new Date(Date.now() + 1000 * 60 * 60 * 6).toISOString();
+  const { data, error } = await supabase
+    .from("broker_connections")
+    .insert({
+      profile_id: profile.id,
+      broker: "FOREX.com_SESSION",
+      forex_username: username,
+      app_key_label: JSON.stringify({
+        localSessionId,
+        sessionToken,
+        account,
+        expiresAt,
+      }),
+      is_demo: true,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data;
+}
+
+async function loadForexSession(localSessionId) {
+  if (!localSessionId) {
+    return null;
+  }
+
+  if (sessions.has(localSessionId)) {
+    return sessions.get(localSessionId);
+  }
+
+  try {
+    const supabase = await getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("broker_connections")
+      .select("*")
+      .eq("broker", "FOREX.com_SESSION")
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (error) {
+      throw error;
+    }
+
+    for (const row of data || []) {
+      try {
+        const payload = JSON.parse(row.app_key_label || "{}");
+        if (payload.localSessionId === localSessionId && payload.sessionToken && payload.account) {
+          const session = {
+            username: row.forex_username,
+            sessionToken: payload.sessionToken,
+            connectedAt: row.created_at,
+            account: payload.account,
+          };
+          sessions.set(localSessionId, session);
+          return session;
+        }
+      } catch (error) {
+        writeDebug("supabase-session-parse-error", { error: error.message });
+      }
+    }
+  } catch (error) {
+    writeDebug("supabase-session-load-error", { error: error.message });
+  }
+
+  return null;
+}
+
 function forexHeaders(session) {
   return {
     UserName: session.username,
@@ -268,9 +342,9 @@ function forexHeaders(session) {
   };
 }
 
-function getStoredSession(sessionId) {
+async function getStoredSession(sessionId) {
   if (!sessionId || !sessions.has(sessionId)) {
-    return null;
+    return loadForexSession(sessionId);
   }
 
   return sessions.get(sessionId);
@@ -894,12 +968,25 @@ async function handleForexConnect(req, res) {
       writeDebug("supabase-broker-save-error", { error: error.message });
     }
 
+    let savedSession = null;
+    try {
+      savedSession = await saveForexSession({
+        localSessionId,
+        username,
+        sessionToken,
+        account: sessions.get(localSessionId).account,
+      });
+    } catch (error) {
+      writeDebug("supabase-session-save-error", { error: error.message });
+    }
+
     sendJson(res, 200, {
       ok: true,
       localSessionId,
       connectedAt: sessions.get(localSessionId).connectedAt,
       account: sessions.get(localSessionId).account,
       savedConnection,
+      savedSession: savedSession ? { id: savedSession.id, created_at: savedSession.created_at } : null,
     });
   } catch (error) {
     sendJson(res, 502, {
@@ -944,7 +1031,7 @@ async function handleHealth(req, res) {
 
 async function handleForexSnapshot(req, res, url) {
   try {
-    const session = getStoredSession(url.searchParams.get("sessionId"));
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
     if (!session) {
       sendJson(res, 401, {
         ok: false,
@@ -998,7 +1085,7 @@ async function handleForexSnapshot(req, res, url) {
 
 async function handleForexMargin(req, res, url) {
   try {
-    const session = getStoredSession(url.searchParams.get("sessionId"));
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
     if (!session) {
       sendJson(res, 401, {
         ok: false,
@@ -1074,7 +1161,7 @@ async function handleForexDebug(req, res) {
 
 async function handleForexMarkets(req, res, url) {
   try {
-    const session = getStoredSession(url.searchParams.get("sessionId"));
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
     if (!session) {
       sendJson(res, 401, {
         ok: false,
@@ -1113,7 +1200,7 @@ async function handleForexMarkets(req, res, url) {
 
 async function handleForexPrices(req, res, url) {
   try {
-    const session = getStoredSession(url.searchParams.get("sessionId"));
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
     if (!session) {
       sendJson(res, 401, {
         ok: false,
@@ -1151,7 +1238,7 @@ async function handleForexPrices(req, res, url) {
 
 async function handleForexCandles(req, res, url) {
   try {
-    const session = getStoredSession(url.searchParams.get("sessionId"));
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
     if (!session) {
       sendJson(res, 401, {
         ok: false,
@@ -1368,7 +1455,7 @@ async function handleTradeLog(req, res) {
 async function handleBotRun(req, res) {
   try {
     const body = JSON.parse((await readBody(req)) || "{}");
-    const session = getStoredSession(body.sessionId);
+    const session = await getStoredSession(body.sessionId);
     const cachedMargin = session?.account?.clientAccountId ? marginCache.get(session.account.clientAccountId) : null;
     const balanceInfo = pickMarginBalance(cachedMargin);
     const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
@@ -1442,7 +1529,7 @@ async function handleBotRun(req, res) {
 async function handleBotScan(req, res) {
   try {
     const body = JSON.parse((await readBody(req)) || "{}");
-    const session = getStoredSession(body.sessionId);
+    const session = await getStoredSession(body.sessionId);
     const cachedMargin = session?.account?.clientAccountId ? marginCache.get(session.account.clientAccountId) : null;
     const balanceInfo = pickMarginBalance(cachedMargin);
     const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
@@ -1569,7 +1656,7 @@ async function handleDemoOpen(req, res) {
     const body = JSON.parse((await readBody(req)) || "{}");
     const profile = await getOrCreateDefaultProfile();
     const positions = getDemoPositions(profile.id);
-    const session = getStoredSession(body.sessionId);
+    const session = await getStoredSession(body.sessionId);
     const cachedMargin = session?.account?.clientAccountId ? marginCache.get(session.account.clientAccountId) : null;
     const balanceInfo = pickMarginBalance(cachedMargin);
     const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
@@ -1671,7 +1758,7 @@ async function handleDemoMark(req, res) {
     const body = JSON.parse((await readBody(req)) || "{}");
     const profile = await getOrCreateDefaultProfile();
     const positions = getDemoPositions(profile.id);
-    const session = getStoredSession(body.sessionId);
+    const session = await getStoredSession(body.sessionId);
     const openPositions = positions.filter((position) => position.status === "open");
     const updates = [];
 
