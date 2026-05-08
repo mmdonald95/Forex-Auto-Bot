@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In - Forex Auto Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="signin-body">
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Forex Auto Bot home">
+      <span class="brand-mark">A</span>
+      <span>Forex Auto Bot</span>
+    </a>
+    <a class="button secondary dark" href="/">Back Home</a>
+  </header>
+
+  <main class="signin-shell">
+    <section class="signin-panel">
+      <div class="section-copy">
+        <p class="eyebrow">FOREX.com connection</p>
+        <h1>Sign in to connect your trading account.</h1>
+        <p>Your username and password are sent to the local server to create a FOREX.com session. The saved AppKey is used automatically when the AppKey field is blank.</p>
+      </div>
+      <form class="broker-form standalone" data-broker-form>
+        <label>
+          FOREX.com username
+          <input type="text" name="username" autocomplete="username" placeholder="Username">
+        </label>
+        <label>
+          FOREX.com password
+          <input type="password" name="password" autocomplete="current-password" placeholder="Password">
+        </label>
+        <label>
+          API AppKey
+          <input type="password" name="appKey" autocomplete="off" placeholder="Using saved AppKey when blank">
+        </label>
+        <button class="button primary full" type="submit">Connect Account</button>
+        <output class="connection-output" data-broker-output>Saved FOREX.com AppKey will be used when blank.</output>
+        <p class="form-note">Use demo mode before enabling live trading. Automated forex trading can lose money.</p>
+      </form>
+    </section>
+  </main>
+
+  <script src="signin.js"></script>
+</body>
+</html>

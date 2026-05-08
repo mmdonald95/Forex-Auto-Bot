@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Forex Auto Bot Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="app-body">
+  <header class="app-header">
+    <a class="brand" href="/" aria-label="Forex Auto Bot home">
+      <span class="brand-mark">A</span>
+      <span>Forex Auto Bot</span>
+    </a>
+    <div class="app-header-actions">
+      <button class="button secondary dark" type="button" data-refresh-dashboard>Refresh</button>
+      <a class="button primary" href="/signin.html">Sign In</a>
+    </div>
+  </header>
+
+  <main class="dashboard-shell">
+    <section class="dashboard-hero">
+      <div>
+        <p class="eyebrow">Connected FOREX.com account</p>
+        <h1>Account dashboard</h1>
+        <p data-dashboard-status>Loading account data...</p>
+      </div>
+      <div class="bot-state">
+        <span>Bot mode</span>
+        <strong>Demo Guard</strong>
+      </div>
+    </section>
+
+    <section class="money-grid" aria-label="Account money overview">
+      <article>
+        <span>Forex account value</span>
+        <strong data-account-value>--</strong>
+      </article>
+      <article>
+        <span>Money made</span>
+        <strong class="positive" data-money-made>--</strong>
+      </article>
+      <article>
+        <span>Money spent</span>
+        <strong class="negative" data-money-spent>--</strong>
+      </article>
+      <article>
+        <span>Open positions</span>
+        <strong data-open-count>--</strong>
+      </article>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="dashboard-card">
+        <div class="table-header">
+          <span>Supabase storage</span>
+          <span data-supabase-db-status>Checking...</span>
+        </div>
+        <div class="detail-list">
+          <div><span>Profile</span><strong data-db-profile>--</strong></div>
+          <div><span>Broker records</span><strong data-db-brokers>--</strong></div>
+          <div><span>Bot settings</span><strong data-db-settings>--</strong></div>
+          <div><span>Trade logs</span><strong data-db-trades>--</strong></div>
+        </div>
+      </article>
+
+      <article class="dashboard-card">
+        <div class="table-header">
+          <span>Bot settings</span>
+          <span data-settings-status>Not saved this session.</span>
+        </div>
+        <form class="settings-form" data-settings-form>
+          <label>
+            Risk per trade
+            <input type="number" name="riskPerTrade" value="1.5" min="0.1" max="5" step="0.1">
+          </label>
+          <label>
+            Daily stop
+            <input type="number" name="dailyStop" value="4" min="0.5" max="20" step="0.5">
+          </label>
+          <label>
+            Minimum reward:risk
+            <input type="number" name="rewardRiskRatio" value="2" min="1" max="5" step="0.25">
+          </label>
+          <label class="toggle-row light">
+            <span>News filter</span>
+            <input type="checkbox" name="newsFilter" checked>
+          </label>
+          <label class="toggle-row light">
+            <span>Bot enabled</span>
+            <input type="checkbox" name="botEnabled">
+          </label>
+          <button class="button primary full" type="submit">Save Bot Settings</button>
+        </form>
+      </article>
+    </section>
+
+    <section class="dashboard-card">
+      <div class="table-header">
+        <span>Demo bot engine</span>
+        <span data-bot-status>Simulation only. No live orders.</span>
+      </div>
+      <div class="bot-runner">
+        <div>
+          <p class="bot-runner-title">Moving-average strategy with profit rule</p>
+          <p>Requires expected reward to be greater than expected risk. Top-15 scan checks major liquid pairs but only logs one simulated decision.</p>
+        </div>
+        <div class="bot-actions">
+          <button class="button secondary dark" type="button" data-run-bot>Run EUR/USD</button>
+          <button class="button primary" type="button" data-scan-bot>Scan Top 15</button>
+        </div>
+      </div>
+      <div class="decision-panel" data-bot-result hidden>
+        <div><span>Decision</span><strong data-decision-direction>--</strong></div>
+        <div><span>Last price</span><strong data-decision-price>--</strong></div>
+        <div><span>Short MA</span><strong data-decision-short>--</strong></div>
+        <div><span>Long MA</span><strong data-decision-long>--</strong></div>
+        <div><span>Suggested stop</span><strong data-decision-stop>--</strong></div>
+        <div><span>Suggested take profit</span><strong data-decision-target>--</strong></div>
+        <div><span>Expected risk</span><strong data-decision-risk>--</strong></div>
+        <div><span>Expected profit</span><strong data-decision-profit>--</strong></div>
+        <div><span>Reward:risk</span><strong data-decision-rr>--</strong></div>
+        <div><span>Data source</span><strong data-decision-source>--</strong></div>
+        <div><span>Candles used</span><strong data-decision-candles>--</strong></div>
+        <div><span>Live spread</span><strong data-decision-spread>--</strong></div>
+        <p data-decision-reason>--</p>
+      </div>
+    </section>
+
+    <section class="dashboard-card">
+      <div class="table-header">
+        <span>Live FOREX.com prices</span>
+        <span data-live-prices-status>Not loaded.</span>
+      </div>
+      <div class="bot-runner">
+        <div>
+          <p class="bot-runner-title">Top-15 bid/offer snapshots</p>
+          <p>Pulls live price snapshots from the FOREX.com PRICES stream using resolved market IDs.</p>
+        </div>
+        <button class="button secondary dark" type="button" data-refresh-prices>Refresh Live Prices</button>
+      </div>
+      <div class="data-table live-price-table">
+        <div class="table-header price-row">
+          <span>Market</span>
+          <span>Bid</span>
+          <span>Offer</span>
+          <span>Mid</span>
+          <span>Spread</span>
+        </div>
+        <div data-live-prices-list class="table-list"></div>
+      </div>
+    </section>
+
+    <section class="dashboard-card chart-card">
+      <div class="table-header">
+        <span>Candlestick chart</span>
+        <span data-candles-status>Connect to load candles.</span>
+      </div>
+      <form class="chart-toolbar" data-candles-form>
+        <label>
+          Market
+          <select name="market">
+            <option>EUR/USD</option>
+            <option>USD/JPY</option>
+            <option>GBP/USD</option>
+            <option>AUD/USD</option>
+            <option>USD/CAD</option>
+          </select>
+        </label>
+        <label>
+          Timeframe
+          <select name="timeframe">
+            <option value="MINUTE:15">15m</option>
+            <option value="MINUTE:5">5m</option>
+            <option value="HOUR:1">1h</option>
+            <option value="DAY:1">1d</option>
+          </select>
+        </label>
+        <button class="button secondary dark" type="submit">Load Chart</button>
+      </form>
+      <div class="candlestick-shell">
+        <svg data-candles-chart viewBox="0 0 1000 420" role="img" aria-label="Candlestick price chart"></svg>
+      </div>
+    </section>
+
+    <section class="dashboard-grid">
+      <article class="dashboard-card">
+        <div class="table-header">
+          <span>Account details</span>
+          <span data-account-updated>--</span>
+        </div>
+        <div class="detail-list">
+          <div><span>User</span><strong data-account-user>--</strong></div>
+          <div><span>Currency</span><strong data-account-currency>--</strong></div>
+          <div><span>Client account ID</span><strong data-client-account>--</strong></div>
+          <div><span>Trading account ID</span><strong data-trading-account>--</strong></div>
+          <div><span>Balance source</span><strong data-balance-source>--</strong></div>
+        </div>
+      </article>
+
+      <article class="dashboard-card">
+        <div class="table-header">
+          <span>Market lookup</span>
+          <span data-dashboard-markets-status>Ready</span>
+        </div>
+        <form class="market-search compact" data-dashboard-market-form>
+          <label>
+            Currency pair
+            <input type="search" name="query" value="EUR/USD" placeholder="EUR/USD">
+          </label>
+          <button class="button secondary dark" type="submit">Search</button>
+        </form>
+        <div class="table-list" data-dashboard-markets-list></div>
+      </article>
+    </section>
+
+    <section class="dashboard-card">
+      <div class="table-header">
+        <span>Open positions</span>
+        <span data-dashboard-positions-status>--</span>
+      </div>
+      <div class="table-list" data-dashboard-positions-list></div>
+    </section>
+
+    <section class="dashboard-card">
+      <div class="table-header">
+        <span>Recent trade history</span>
+        <span data-dashboard-history-status>--</span>
+      </div>
+      <div class="table-list" data-dashboard-history-list></div>
+    </section>
+  </main>
+
+  <script src="dashboard.js"></script>
+</body>
+</html>

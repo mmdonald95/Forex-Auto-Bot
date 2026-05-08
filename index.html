@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AtlasFX Auto Trading</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <a class="brand" href="#top" aria-label="AtlasFX home">
+      <span class="brand-mark">A</span>
+      <span>AtlasFX</span>
+    </a>
+    <nav class="nav-links" aria-label="Primary navigation">
+      <a href="#system">System</a>
+      <a href="#controls">Controls</a>
+      <a href="#pricing">Pricing</a>
+      <a href="#contact">Apply</a>
+    </nav>
+    <a class="header-action" href="/signin.html">Sign In</a>
+  </header>
+
+  <main id="top">
+    <section class="hero" aria-label="Automated forex trading platform">
+      <img class="hero-image" src="assets/forex-dashboard-hero.png" alt="Automated forex trading dashboard on a desktop monitor">
+      <div class="hero-overlay"></div>
+      <div class="hero-content">
+        <p class="eyebrow">Automated forex strategy platform</p>
+        <h1>AtlasFX trades with rules, risk limits, and real-time discipline.</h1>
+        <p class="hero-copy">Launch forex automation that scans major currency pairs, follows tested entry rules, and keeps every position inside your drawdown limits.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="#contact">Request Access</a>
+          <a class="button secondary" href="#system">View System</a>
+        </div>
+        <div class="hero-metrics" aria-label="Platform highlights">
+          <div>
+            <strong>24/5</strong>
+            <span>Market monitoring</span>
+          </div>
+          <div>
+            <strong>8</strong>
+            <span>Major FX pairs</span>
+          </div>
+          <div>
+            <strong>1.5%</strong>
+            <span>Default max risk per trade</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="ticker" aria-label="Example currency pairs">
+      <span>EUR/USD <strong>Signal Watch</strong></span>
+      <span>GBP/USD <strong>Momentum</strong></span>
+      <span>USD/JPY <strong>Range Filter</strong></span>
+      <span>AUD/USD <strong>Breakout</strong></span>
+      <span>USD/CAD <strong>Risk Check</strong></span>
+    </section>
+
+    <section class="section grid-section" id="system">
+      <div class="section-copy">
+        <p class="eyebrow">The system</p>
+        <h2>Built for traders who want automation without blind trust.</h2>
+        <p>AtlasFX combines signal logic, broker execution, and position controls into one workflow. You choose the risk profile; the platform handles scanning, entries, exits, and reporting.</p>
+      </div>
+      <div class="feature-grid">
+        <article class="feature-card">
+          <span class="icon">01</span>
+          <h3>Signal Engine</h3>
+          <p>Tracks trend, volatility, spread, and session timing before allowing any trade setup.</p>
+        </article>
+        <article class="feature-card">
+          <span class="icon">02</span>
+          <h3>Risk Governor</h3>
+          <p>Caps exposure by trade, currency, day, and account drawdown before orders reach the broker.</p>
+        </article>
+        <article class="feature-card">
+          <span class="icon">03</span>
+          <h3>Execution Layer</h3>
+          <p>Routes orders through connected broker APIs with stops, targets, and trailing logic attached.</p>
+        </article>
+        <article class="feature-card">
+          <span class="icon">04</span>
+          <h3>Performance Journal</h3>
+          <p>Shows win rate, average R multiple, drawdown, pair exposure, and strategy changes over time.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section platform" id="controls">
+      <div class="dashboard-panel">
+        <div class="panel-top">
+          <div>
+            <p class="panel-label">Live Strategy</p>
+            <h2>Conservative Growth</h2>
+          </div>
+          <span class="status-dot">Active</span>
+        </div>
+        <div class="chart" aria-hidden="true">
+          <span style="height:42%"></span>
+          <span style="height:67%"></span>
+          <span style="height:35%"></span>
+          <span style="height:76%"></span>
+          <span style="height:58%"></span>
+          <span style="height:84%"></span>
+          <span style="height:61%"></span>
+          <span style="height:72%"></span>
+          <span style="height:46%"></span>
+          <span style="height:88%"></span>
+          <span style="height:53%"></span>
+          <span style="height:78%"></span>
+        </div>
+        <div class="control-grid">
+          <label>
+            <span>Risk per trade <strong data-risk-value>1.5%</strong></span>
+            <input type="range" min="0.25" max="3" value="1.5" step="0.25" data-risk-slider>
+          </label>
+          <label>
+            <span>Daily stop <strong data-stop-value>4%</strong></span>
+            <input type="range" min="1" max="8" value="4" step="0.5" data-stop-slider>
+          </label>
+          <label class="toggle-row">
+            <span>News filter</span>
+            <input type="checkbox" checked>
+          </label>
+          <label class="toggle-row">
+            <span>Auto compound</span>
+            <input type="checkbox">
+          </label>
+        </div>
+      </div>
+      <div class="section-copy">
+        <p class="eyebrow">Human override</p>
+        <h2>Every automated trade needs boundaries.</h2>
+        <p>Set pair permissions, maximum lot size, daily shutdown rules, and manual pause windows. The platform is designed to help traders apply discipline, not remove judgment.</p>
+        <ul class="check-list">
+          <li>Broker connection review before going live</li>
+          <li>Backtest and demo mode before capital is connected</li>
+          <li>Transparent logs for every entry and exit</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="section pricing" id="pricing">
+      <div class="section-copy centered">
+        <p class="eyebrow">Plans</p>
+        <h2>Choose the level of automation support you need.</h2>
+      </div>
+      <div class="price-grid">
+        <article class="price-card">
+          <h3>Demo Lab</h3>
+          <p class="price">$49<span>/mo</span></p>
+          <p>For testing strategies in a simulated environment before live trading.</p>
+          <a class="button secondary full" href="#contact">Join Demo</a>
+        </article>
+        <article class="price-card featured">
+          <h3>Live Automation</h3>
+          <p class="price">$199<span>/mo</span></p>
+          <p>For traders ready to connect a broker account with strict risk controls.</p>
+          <a class="button primary full" href="#contact">Apply Now</a>
+        </article>
+        <article class="price-card">
+          <h3>Managed Setup</h3>
+          <p class="price">Custom</p>
+          <p>For advanced traders who want strategy onboarding and reporting support.</p>
+          <a class="button secondary full" href="#contact">Talk Strategy</a>
+        </article>
+      </div>
+    </section>
+
+    <section class="section contact" id="contact">
+      <div class="section-copy">
+        <p class="eyebrow">Access request</p>
+        <h2>Start with a risk review.</h2>
+        <p>Tell us your trading experience, account size range, and whether you want demo-only or live broker automation.</p>
+      </div>
+      <form class="lead-form" data-lead-form>
+        <label>
+          Full name
+          <input type="text" name="name" placeholder="Your name">
+        </label>
+        <label>
+          Email
+          <input type="email" name="email" placeholder="you@example.com">
+        </label>
+        <label>
+          Account size range
+          <select name="account-size">
+            <option>$1,000 - $5,000</option>
+            <option>$5,000 - $25,000</option>
+            <option>$25,000 - $100,000</option>
+            <option>$100,000+</option>
+          </select>
+        </label>
+        <label>
+          Goal
+          <textarea name="goal" rows="4" placeholder="Tell us what you want automated."></textarea>
+        </label>
+        <button class="button primary full" type="submit">Submit Application</button>
+        <output class="form-success" data-form-success hidden>Application captured for this prototype.</output>
+        <p class="form-note">This website is a front-end prototype. Connect forms, broker APIs, authentication, and compliance review before production use.</p>
+      </form>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <strong>Risk disclosure:</strong> Forex trading involves substantial risk and is not suitable for every investor. Automated systems do not guarantee profit and can lose money.
+  </footer>
+  <script src="script.js"></script>
+</body>
+</html>
