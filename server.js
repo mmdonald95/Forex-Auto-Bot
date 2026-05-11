@@ -28,6 +28,8 @@ const liveTradingConfirmText = process.env.LIVE_TRADING_CONFIRM_TEXT || "I UNDER
 const maxLiveTradeQuantity = Number(process.env.MAX_LIVE_TRADE_QUANTITY || 1000);
 const maxDailyLiveTrades = Number(process.env.MAX_DAILY_LIVE_TRADES || 1);
 const maxOpenPositions = Number(process.env.MAX_OPEN_POSITIONS || 1);
+const maxLiveSpreadPips = Number(process.env.MAX_LIVE_SPREAD_PIPS || 2);
+const maxDailyLossUsd = Number(process.env.MAX_DAILY_LOSS_USD || 100);
 
 const sessions = new Map();
 const marginCache = new Map();
@@ -926,6 +928,16 @@ function todaysIsoStart() {
   return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
 }
 
+function spreadToPips(spread, marketName = "") {
+  const value = parseBrokerNumber(spread);
+  if (value === null) {
+    return null;
+  }
+
+  const isJpy = String(marketName).toUpperCase().includes("JPY");
+  return Number((value * (isJpy ? 100 : 10000)).toFixed(2));
+}
+
 function getDemoPositions(profileId) {
   if (!demoPositions.has(profileId)) {
     demoPositions.set(profileId, []);
@@ -1791,17 +1803,31 @@ async function handleTradeLog(req, res) {
 }
 
 async function handleLiveTradingStatus(req, res) {
+  let latestSettings = null;
+  let dailyLoss = 0;
+  try {
+    const profile = await getOrCreateDefaultProfile();
+    latestSettings = await getLatestBotSettings(profile.id);
+    dailyLoss = await getTodayRealizedLoss(profile.id);
+  } catch (error) {
+    writeDebug("live-status-safety-error", { error: error.message });
+  }
+
   sendJson(res, 200, {
     ok: true,
     liveTradingEnabled,
+    botArmed: Boolean(latestSettings?.bot_enabled),
     confirmText: liveTradingConfirmText,
     limits: {
       maxLiveTradeQuantity,
       maxDailyLiveTrades,
       maxOpenPositions,
+      maxLiveSpreadPips,
+      maxDailyLossUsd,
     },
+    dailyLoss,
     message: liveTradingEnabled
-      ? "Live trading is enabled on this backend. Use small size and verify each fill in FOREX.com."
+      ? "Live trading is enabled on this backend. Bot enabled must also be checked before orders can be sent."
       : "Live trading is locked. Set ENABLE_LIVE_TRADING=true on the always-on backend only when you are ready.",
   });
 }
@@ -1863,6 +1889,100 @@ async function countTodayLiveTrades(profileId) {
   return count || 0;
 }
 
+async function getLatestBotSettings(profileId) {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("bot_settings")
+    .select("*")
+    .eq("profile_id", profileId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data || null;
+}
+
+async function getTodayRealizedLoss(profileId) {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("trade_logs")
+    .select("profit_loss")
+    .eq("profile_id", profileId)
+    .gte("created_at", todaysIsoStart());
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []).reduce((total, row) => {
+    const value = parseBrokerNumber(row.profit_loss);
+    return value !== null && value < 0 ? total + Math.abs(value) : total;
+  }, 0);
+}
+
+async function handleEmergencyStop(req, res) {
+  try {
+    const supabase = await getSupabaseAdmin();
+    const profile = await getOrCreateDefaultProfile();
+    const now = new Date().toISOString();
+    const [settingsResult, logResult] = await Promise.all([
+      supabase
+        .from("bot_settings")
+        .insert({
+          profile_id: profile.id,
+          risk_per_trade: 0,
+          daily_stop: 0,
+          news_filter: true,
+          auto_compound: false,
+          bot_enabled: false,
+          updated_at: now,
+        })
+        .select("*")
+        .single(),
+      supabase
+        .from("trade_logs")
+        .insert({
+          profile_id: profile.id,
+          broker_order_id: null,
+          market: "ALL",
+          direction: "STOP",
+          quantity: null,
+          entry_price: null,
+          exit_price: null,
+          profit_loss: null,
+          status: "emergency_stop",
+          reason: "Emergency stop pressed. Bot disabled; no new live orders should be sent.",
+        })
+        .select("*")
+        .single(),
+    ]);
+
+    if (settingsResult.error) {
+      throw settingsResult.error;
+    }
+    if (logResult.error) {
+      throw logResult.error;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      profile,
+      settings: settingsResult.data,
+      tradeLog: logResult.data,
+      message: "Emergency stop saved. Bot enabled is now off.",
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
 async function handleLiveTradeExecute(req, res) {
   try {
     const body = JSON.parse((await readBody(req)) || "{}");
@@ -1910,11 +2030,22 @@ async function handleLiveTradeExecute(req, res) {
     const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
     const dailyStop = Number(body.dailyStop ?? 4);
     const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
+    const requestMaxSpreadPips = Number(body.maxSpreadPips || maxLiveSpreadPips);
     if (riskPerTrade > 1) {
       throw new Error("Live risk per trade is capped at 1% for this prototype.");
     }
 
     const profile = await getOrCreateDefaultProfile();
+    const latestSettings = await getLatestBotSettings(profile.id);
+    if (!latestSettings?.bot_enabled) {
+      throw new Error("Bot enabled is off. Turn on Bot enabled and save settings before live orders can be sent.");
+    }
+
+    const realizedLossToday = await getTodayRealizedLoss(profile.id);
+    if (realizedLossToday >= maxDailyLossUsd) {
+      throw new Error(`Daily loss lockout is active. Realized loss ${realizedLossToday.toFixed(2)} is at or above ${maxDailyLossUsd.toFixed(2)}.`);
+    }
+
     const todaysLiveTrades = await countTodayLiveTrades(profile.id);
     if (todaysLiveTrades >= maxDailyLiveTrades) {
       throw new Error(`Daily live trade limit reached (${maxDailyLiveTrades}).`);
@@ -1942,6 +2073,15 @@ async function handleLiveTradeExecute(req, res) {
       decision.liveBid = livePrice.bid;
       decision.liveOffer = livePrice.offer;
       decision.liveSpread = livePrice.spread;
+    }
+
+    const spreadPips = spreadToPips(livePrice?.spread, market.name);
+    if (spreadPips === null) {
+      throw new Error("No live order placed. FOREX.com did not return a usable live spread.");
+    }
+    const spreadLimit = Math.min(requestMaxSpreadPips, maxLiveSpreadPips);
+    if (spreadPips > spreadLimit) {
+      throw new Error(`No live order placed. Spread ${spreadPips} pips is above the ${spreadLimit} pip limit.`);
     }
 
     if (!["BUY", "SELL"].includes(decision.direction) || decision.status !== "simulated_signal") {
@@ -2039,6 +2179,50 @@ async function handleLiveTradeExecute(req, res) {
       },
       orderResponse,
       tradeLog,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
+async function handleLiveReconcile(req, res, url) {
+  try {
+    const session = await getStoredSession(url.searchParams.get("sessionId"));
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first.",
+      });
+      return;
+    }
+
+    const tradingAccount = getPrimaryTradingAccount(session.account);
+    if (!tradingAccount?.tradingAccountId) {
+      throw new Error("FOREX.com did not return a TradingAccountId.");
+    }
+
+    const auth = forexHeaders(session);
+    const tradingAccountId = tradingAccount.tradingAccountId;
+    const [positionsResult, ordersResult, historyResult] = await Promise.allSettled([
+      getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
+      getJson(`${apiBase}/order/activestoplimitorders?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
+      getJson(`${apiBase}/order/tradehistory?${buildQuery({ TradingAccountId: tradingAccountId, MaxResults: 25 })}`, auth),
+    ]);
+
+    const warnings = [positionsResult, ordersResult, historyResult]
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason.message);
+
+    sendJson(res, 200, {
+      ok: true,
+      tradingAccountId,
+      positions: normalizeList(positionsResult.status === "fulfilled" ? positionsResult.value : {}, ["OpenPositions", "Positions", "ListOpenPositions"]),
+      activeOrders: normalizeList(ordersResult.status === "fulfilled" ? ordersResult.value : {}, ["ActiveStopLimitOrders", "Orders", "StopLimitOrders"]),
+      tradeHistory: normalizeList(historyResult.status === "fulfilled" ? historyResult.value : {}, ["TradeHistory", "Trades", "Orders"]),
+      warnings,
     });
   } catch (error) {
     sendJson(res, 500, {
@@ -2539,6 +2723,16 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/ops/status") {
     handleOpsStatus(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/live/emergency-stop") {
+    handleEmergencyStop(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/live/reconcile") {
+    handleLiveReconcile(req, res, url);
     return;
   }
 

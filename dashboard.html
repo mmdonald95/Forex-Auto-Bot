@@ -157,11 +157,21 @@
           Quantity
           <input type="number" name="quantity" value="1000" min="1" step="1">
         </label>
+        <label>
+          Max spread pips
+          <input type="number" name="maxSpreadPips" value="2" min="0.1" max="10" step="0.1">
+        </label>
+        <label>
+          Daily loss lock
+          <input type="text" data-daily-loss-lock value="Loading..." readonly>
+        </label>
         <label class="full-field">
           Confirmation phrase
           <input type="text" name="confirmText" data-live-confirm placeholder="Live trading is locked">
         </label>
         <button class="button danger full" type="submit" data-live-trade-button>Execute Live Trade</button>
+        <button class="button secondary dark full" type="button" data-reconcile-live>Reconcile FOREX.com Orders</button>
+        <button class="button danger full" type="button" data-emergency-stop>Emergency Stop</button>
       </form>
       <div class="decision-panel" data-live-result hidden>
         <div><span>Order status</span><strong data-live-order-status>--</strong></div>
@@ -173,6 +183,7 @@
         <div><span>Take profit</span><strong data-live-order-target>--</strong></div>
         <p data-live-order-reason>--</p>
       </div>
+      <div class="table-list live-reconcile-list" data-live-reconcile-list></div>
     </section>
 
     <section class="dashboard-card">

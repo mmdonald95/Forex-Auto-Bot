@@ -1106,6 +1106,7 @@ input[type="checkbox"] {
 
 .settings-form input[type="number"],
 .settings-form input[type="text"],
+.settings-form input[readonly],
 .settings-form select {
   width: 100%;
   border: 1px solid var(--line);
@@ -1114,6 +1115,14 @@ input[type="checkbox"] {
   font: inherit;
   color: var(--ink);
   background: var(--paper);
+}
+
+.settings-form input[readonly] {
+  color: var(--muted);
+}
+
+.live-reconcile-list {
+  padding: 0 18px 18px;
 }
 
 .settings-form .full-field {

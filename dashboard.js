@@ -50,6 +50,10 @@ const liveStatus = document.querySelector("[data-live-status]");
 const liveTradeForm = document.querySelector("[data-live-trade-form]");
 const liveTradeButton = document.querySelector("[data-live-trade-button]");
 const liveConfirm = document.querySelector("[data-live-confirm]");
+const dailyLossLock = document.querySelector("[data-daily-loss-lock]");
+const emergencyStopButton = document.querySelector("[data-emergency-stop]");
+const reconcileLiveButton = document.querySelector("[data-reconcile-live]");
+const liveReconcileList = document.querySelector("[data-live-reconcile-list]");
 const liveResult = document.querySelector("[data-live-result]");
 const liveOrderStatus = document.querySelector("[data-live-order-status]");
 const liveOrderMarket = document.querySelector("[data-live-order-market]");
@@ -793,13 +797,18 @@ async function loadLiveTradingStatus() {
     }
 
     liveStatus.textContent = data.liveTradingEnabled
-      ? `Enabled. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day.`
+      ? data.botArmed
+        ? `Armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
+        : "Backend enabled, but Bot enabled is off."
       : "Locked by backend.";
     if (botMode) {
-      botMode.textContent = data.liveTradingEnabled ? "Live Armed" : "Live Locked";
+      botMode.textContent = data.liveTradingEnabled && data.botArmed ? "Live Armed" : "Live Locked";
+    }
+    if (dailyLossLock) {
+      dailyLossLock.value = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;
     }
     if (liveTradeButton) {
-      liveTradeButton.disabled = !data.liveTradingEnabled;
+      liveTradeButton.disabled = !(data.liveTradingEnabled && data.botArmed);
     }
     if (liveConfirm) {
       liveConfirm.placeholder = data.confirmText;
@@ -817,6 +826,81 @@ async function loadLiveTradingStatus() {
   }
 }
 
+async function emergencyStop() {
+  liveStatus.textContent = "Stopping live trading...";
+  if (liveTradeButton) {
+    liveTradeButton.disabled = true;
+  }
+
+  try {
+    const response = await fetchWithTimeout("/api/live/emergency-stop", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: "{}",
+    }, 12000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Emergency stop failed.");
+    }
+
+    liveStatus.textContent = "Emergency stop saved. Bot enabled is off.";
+    settingsStatus.textContent = "Emergency stop saved.";
+    const botEnabled = settingsForm.querySelector("[name='botEnabled']");
+    if (botEnabled) {
+      botEnabled.checked = false;
+    }
+    await Promise.all([loadLiveTradingStatus(), loadSupabaseCheck()]);
+  } catch (error) {
+    liveStatus.textContent = error.message;
+  }
+}
+
+function renderReconcileRows(data) {
+  if (!liveReconcileList) {
+    return;
+  }
+
+  liveReconcileList.innerHTML = "";
+  const summary = [
+    `Open positions: ${data.positions?.length || 0}`,
+    `Active orders: ${data.activeOrders?.length || 0}`,
+    `Recent trades: ${data.tradeHistory?.length || 0}`,
+  ];
+
+  for (const value of summary) {
+    const row = document.createElement("div");
+    row.className = "data-row";
+    const cell = document.createElement("span");
+    cell.textContent = value;
+    row.appendChild(cell);
+    liveReconcileList.appendChild(row);
+  }
+}
+
+async function reconcileLiveOrders() {
+  if (!sessionId) {
+    liveStatus.textContent = "Connect to FOREX.com first.";
+    return;
+  }
+
+  liveStatus.textContent = "Reconciling FOREX.com orders...";
+  try {
+    const response = await fetchWithTimeout(`/api/live/reconcile?sessionId=${encodeURIComponent(sessionId)}`, {}, 15000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to reconcile live orders.");
+    }
+
+    renderReconcileRows(data);
+    liveStatus.textContent = `Reconciled ${data.positions.length} position(s), ${data.activeOrders.length} active order(s).`;
+    openCount.textContent = data.positions.length;
+  } catch (error) {
+    liveStatus.textContent = error.message;
+  }
+}
+
 async function executeLiveTrade(event) {
   event.preventDefault();
   if (!sessionId) {
@@ -830,6 +914,7 @@ async function executeLiveTrade(event) {
     sessionId,
     market: formData.get("market"),
     quantity: formData.get("quantity"),
+    maxSpreadPips: formData.get("maxSpreadPips"),
     confirmText: formData.get("confirmText"),
     riskPerTrade: settings.get("riskPerTrade") || 1,
     dailyStop: settings.get("dailyStop") || 4,
@@ -888,6 +973,8 @@ on(demoRefreshButton, "click", loadDemoPositions);
 on(demoOpenButton, "click", openDemoPosition);
 on(demoMarkButton, "click", markDemoPositions);
 on(liveTradeForm, "submit", executeLiveTrade);
+on(emergencyStopButton, "click", emergencyStop);
+on(reconcileLiveButton, "click", reconcileLiveOrders);
 
 on(refreshButton, "click", loadSnapshot);
 on(marketForm, "submit", (event) => {
