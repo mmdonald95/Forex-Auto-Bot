@@ -5,7 +5,8 @@
   "description": "Local prototype for a FOREX.com API-connected auto trading dashboard.",
   "scripts": {
     "start": "node server.js",
-    "check": "node --check server.js && node --check script.js"
+    "engine": "node engine-worker.js",
+    "check": "node --check server.js && node --check script.js && node --check signin.js && node --check dashboard.js && node --check engine-worker.js"
   },
   "engines": {
     "node": ">=20"

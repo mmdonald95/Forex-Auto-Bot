@@ -12,6 +12,7 @@ Forex Auto Bot is a Node.js web app for connecting to a FOREX.com account, viewi
 - Demo-mode moving-average strategy engine
 - Top-15 forex pair scan in simulation mode
 - Reward-to-risk rule before simulated signals are logged
+- Always-on engine worker for persistent FOREX.com streaming outside Vercel
 
 ## Important Safety Note
 
@@ -75,6 +76,9 @@ The app expects these tables:
 - `broker_connections`
 - `bot_settings`
 - `trade_logs`
+- `account_snapshots`
+
+Run `supabase-account-snapshots.sql` in the Supabase SQL editor to add the account snapshot table used by the always-on engine.
 
 ## What Is Live vs Simulated
 
@@ -101,6 +105,26 @@ Simulation only:
 
 Live FOREX.com order placement is not enabled yet.
 
+## Always-On Trading Engine
+
+Vercel is good for the public website, but FOREX.com Lightstreamer account value streams need a persistent Node process. Use `engine-worker.js` for that process.
+
+Run it locally:
+
+```powershell
+npm run engine
+```
+
+Recommended production setup:
+
+1. Keep the website on Vercel.
+2. Run `npm run engine` on an always-on host such as Railway, Render background worker, Fly.io, DigitalOcean, or a VPS.
+3. Add the same Supabase and FOREX.com environment variables to that host.
+4. Add `FOREXCOM_USERNAME` and `FOREXCOM_PASSWORD` only on the always-on engine host if you want the engine to log in by itself.
+5. Leave live order placement disabled until demo trading is tested.
+
+The engine writes the latest `CLIENTACCOUNTMARGIN` balance into Supabase `account_snapshots`. The Vercel dashboard can read that table when Vercel cannot maintain the live Lightstreamer connection itself.
+
 ## Files Not To Commit
 
 Do not commit:
@@ -120,3 +144,40 @@ These are already listed in `.gitignore`.
 - Add stronger risk controls and correlation limits
 - Add demo P/L tracking
 - Add live order placement only after demo-mode testing is reliable
+
+## Vercel Deployment
+
+This project includes `vercel.json` so Vercel routes traffic through `server.js`.
+
+Add these environment variables in Vercel before deploying:
+
+```env
+FOREXCOM_API_BASE=https://ciapi.cityindex.com/TradingAPI
+FOREXCOM_STREAMING_BASE=https://push.cityindex.com
+FOREXCOM_APP_VERSION=1
+FOREXCOM_APP_COMMENTS=Forex Auto Bot
+FOREXCOM_APP_KEY=your-forexcom-app-key
+
+SUPABASE_REST_URL=https://your-project.supabase.co/rest/v1/
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=your-supabase-anon-key
+SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
+
+DEFAULT_PROFILE_NAME=Marcello Gambino
+DEFAULT_PROFILE_EMAIL=marcello@example.com
+```
+
+Vercel is suitable for the website and dashboard prototype. A real always-on trading bot should later run on a persistent backend or VPS because Vercel serverless functions are not designed to hold broker sessions and streams continuously.
+
+Use Vercel for:
+
+- Landing page
+- Sign in page
+- Dashboard UI
+- Supabase reads/writes
+
+Use the always-on engine for:
+
+- FOREX.com Lightstreamer account value stream
+- Continuous price/strategy monitoring
+- Future live order execution, after risk controls and testing

@@ -340,6 +340,57 @@ async function loadForexSession(localSessionId) {
   return null;
 }
 
+async function loadLatestAccountSnapshot(clientAccountId) {
+  if (!clientAccountId) {
+    return null;
+  }
+
+  try {
+    const supabase = await getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("account_snapshots")
+      .select("*")
+      .eq("broker", "FOREX.com")
+      .eq("client_account_id", String(clientAccountId))
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data || null;
+  } catch (error) {
+    writeDebug("supabase-account-snapshot-load-error", { error: error.message });
+    return null;
+  }
+}
+
+function snapshotMargin(snapshot) {
+  if (!snapshot) {
+    return null;
+  }
+
+  if (snapshot.raw_margin && typeof snapshot.raw_margin === "object") {
+    return {
+      ...snapshot.raw_margin,
+      source: snapshot.source || "account_snapshots",
+      updatedAt: snapshot.updated_at,
+    };
+  }
+
+  if (snapshot.balance_value !== null && snapshot.balance_value !== undefined) {
+    return {
+      [snapshot.balance_key || "AccountValue"]: Number(snapshot.balance_value),
+      source: snapshot.source || "account_snapshots",
+      updatedAt: snapshot.updated_at,
+    };
+  }
+
+  return null;
+}
+
 function forexHeaders(session) {
   return {
     UserName: session.username,
@@ -1047,12 +1098,14 @@ async function handleForexSnapshot(req, res, url) {
 
     const tradingAccount = getPrimaryTradingAccount(session.account);
     if (!tradingAccount) {
+      const savedSnapshot = await loadLatestAccountSnapshot(session.account.clientAccountId);
       sendJson(res, 200, {
         ok: true,
         warning: "No trading account list was returned, so positions and trade history are unavailable until FOREX.com returns a TradingAccountId.",
         connectedAt: session.connectedAt,
         account: session.account,
-        margin: marginCache.get(session.account.clientAccountId) || null,
+        margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
+        accountSnapshot: savedSnapshot,
         primaryTradingAccount: null,
         positions: [],
         activeOrders: [],
@@ -1063,6 +1116,7 @@ async function handleForexSnapshot(req, res, url) {
 
     const tradingAccountId = tradingAccount.tradingAccountId;
     const auth = forexHeaders(session);
+    const savedSnapshot = await loadLatestAccountSnapshot(session.account.clientAccountId);
     const [positionsResult, activeOrdersResult, tradeHistoryResult] = await Promise.allSettled([
       getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
       getJson(`${apiBase}/order/activestoplimitorders?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
@@ -1079,7 +1133,8 @@ async function handleForexSnapshot(req, res, url) {
       ok: true,
       connectedAt: session.connectedAt,
       account: session.account,
-      margin: marginCache.get(session.account.clientAccountId) || null,
+      margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
+      accountSnapshot: savedSnapshot,
       primaryTradingAccount: tradingAccount,
       positions: normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]),
       activeOrders: normalizeList(activeOrders, ["ActiveStopLimitOrders", "Orders", "StopLimitOrders"]),
@@ -1115,6 +1170,22 @@ async function handleForexMargin(req, res, url) {
         clientAccountId,
         margin: cached,
         balance: pickMarginBalance(cached),
+      });
+      return;
+    }
+
+    const savedSnapshot = await loadLatestAccountSnapshot(clientAccountId);
+    const savedMargin = snapshotMargin(savedSnapshot);
+    const savedBalance = pickMarginBalance(savedMargin);
+    if (savedMargin && savedBalance) {
+      sendJson(res, 200, {
+        ok: true,
+        source: "supabase account_snapshots",
+        clientAccountId,
+        margin: savedMargin,
+        balance: savedBalance,
+        updatedAt: savedSnapshot.updated_at,
+        note: "This value was written by the always-on trading engine.",
       });
       return;
     }
