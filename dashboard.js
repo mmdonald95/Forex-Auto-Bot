@@ -660,7 +660,11 @@ async function loadSupabaseCheck() {
     }
 
     supabaseDbStatus.textContent = "Connected";
-    dbProfile.textContent = data.profile?.full_name || data.profile?.email || "--";
+    const profileName = data.profile?.full_name || data.profile?.email || "--";
+    dbProfile.textContent = profileName;
+    if (accountGreeting && profileName !== "--") {
+      accountGreeting.textContent = `Welcome, ${profileName}`;
+    }
     dbBrokers.textContent = data.counts?.brokerConnections ?? "--";
     dbSettings.textContent = data.counts?.botSettings ?? "--";
     dbTrades.textContent = data.counts?.tradeLogs ?? "--";
