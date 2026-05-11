@@ -130,6 +130,50 @@
       </div>
     </section>
 
+    <section class="dashboard-card live-trading-card">
+      <div class="table-header">
+        <span>Live trade execution</span>
+        <span data-live-status>Locked by backend.</span>
+      </div>
+      <div class="bot-runner">
+        <div>
+          <p class="bot-runner-title">FOREX.com market order with attached stop and limit</p>
+          <p>Live execution is blocked unless the backend enables it, the strategy returns BUY or SELL, and the confirmation phrase matches.</p>
+        </div>
+      </div>
+      <form class="settings-form" data-live-trade-form>
+        <label>
+          Market
+          <select name="market">
+            <option>EUR/USD</option>
+            <option>USD/JPY</option>
+            <option>GBP/USD</option>
+            <option>AUD/USD</option>
+            <option>USD/CAD</option>
+          </select>
+        </label>
+        <label>
+          Quantity
+          <input type="number" name="quantity" value="1000" min="1" step="1">
+        </label>
+        <label class="full-field">
+          Confirmation phrase
+          <input type="text" name="confirmText" data-live-confirm placeholder="Live trading is locked">
+        </label>
+        <button class="button danger full" type="submit" data-live-trade-button>Execute Live Trade</button>
+      </form>
+      <div class="decision-panel" data-live-result hidden>
+        <div><span>Order status</span><strong data-live-order-status>--</strong></div>
+        <div><span>Market</span><strong data-live-order-market>--</strong></div>
+        <div><span>Direction</span><strong data-live-order-direction>--</strong></div>
+        <div><span>Quantity</span><strong data-live-order-quantity>--</strong></div>
+        <div><span>Entry</span><strong data-live-order-entry>--</strong></div>
+        <div><span>Stop</span><strong data-live-order-stop>--</strong></div>
+        <div><span>Take profit</span><strong data-live-order-target>--</strong></div>
+        <p data-live-order-reason>--</p>
+      </div>
+    </section>
+
     <section class="dashboard-card">
       <div class="table-header">
         <span>Live FOREX.com prices</span>
@@ -183,6 +227,37 @@
       </form>
       <div class="candlestick-shell">
         <svg data-candles-chart viewBox="0 0 1000 420" role="img" aria-label="Candlestick price chart"></svg>
+      </div>
+    </section>
+
+    <section class="dashboard-card">
+      <div class="table-header">
+        <span>Demo P/L tracker</span>
+        <span data-demo-status>Simulation only.</span>
+      </div>
+      <div class="bot-runner">
+        <div>
+          <p class="bot-runner-title">Paper positions</p>
+          <p>Opens simulated positions from the strategy and marks them against FOREX.com candle prices. No live orders are sent.</p>
+        </div>
+        <div class="bot-actions">
+          <button class="button secondary dark" type="button" data-demo-refresh>Refresh Demo P/L</button>
+          <button class="button primary" type="button" data-demo-open>Open Demo Position</button>
+          <button class="button secondary dark" type="button" data-demo-mark>Mark Open Positions</button>
+        </div>
+      </div>
+      <div class="account-metrics compact">
+        <div><span>Open demo trades</span><strong data-demo-open-count>0</strong></div>
+        <div><span>Closed demo trades</span><strong data-demo-closed-count>0</strong></div>
+        <div><span>Realized demo P/L</span><strong data-demo-realized>--</strong></div>
+        <div><span>Last update</span><strong data-demo-updated>--</strong></div>
+      </div>
+      <div class="data-table">
+        <div class="table-header">
+          <span>Demo positions</span>
+          <span data-demo-table-status>--</span>
+        </div>
+        <div data-demo-list class="table-list"></div>
       </div>
     </section>
 

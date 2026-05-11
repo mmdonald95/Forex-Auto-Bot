@@ -43,6 +43,19 @@ const decisionSource = document.querySelector("[data-decision-source]");
 const decisionCandles = document.querySelector("[data-decision-candles]");
 const decisionSpread = document.querySelector("[data-decision-spread]");
 const decisionReason = document.querySelector("[data-decision-reason]");
+const liveStatus = document.querySelector("[data-live-status]");
+const liveTradeForm = document.querySelector("[data-live-trade-form]");
+const liveTradeButton = document.querySelector("[data-live-trade-button]");
+const liveConfirm = document.querySelector("[data-live-confirm]");
+const liveResult = document.querySelector("[data-live-result]");
+const liveOrderStatus = document.querySelector("[data-live-order-status]");
+const liveOrderMarket = document.querySelector("[data-live-order-market]");
+const liveOrderDirection = document.querySelector("[data-live-order-direction]");
+const liveOrderQuantity = document.querySelector("[data-live-order-quantity]");
+const liveOrderEntry = document.querySelector("[data-live-order-entry]");
+const liveOrderStop = document.querySelector("[data-live-order-stop]");
+const liveOrderTarget = document.querySelector("[data-live-order-target]");
+const liveOrderReason = document.querySelector("[data-live-order-reason]");
 const refreshPricesButton = document.querySelector("[data-refresh-prices]");
 const livePricesStatus = document.querySelector("[data-live-prices-status]");
 const livePricesList = document.querySelector("[data-live-prices-list]");
@@ -670,6 +683,87 @@ async function runBotRequest(endpoint, statusText) {
   }
 }
 
+async function loadLiveTradingStatus() {
+  try {
+    const response = await fetchWithTimeout("/api/live/status", {}, 10000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to load live trading status.");
+    }
+
+    liveStatus.textContent = data.liveTradingEnabled
+      ? `Enabled. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day.`
+      : "Locked by backend.";
+    if (liveTradeButton) {
+      liveTradeButton.disabled = !data.liveTradingEnabled;
+    }
+    if (liveConfirm) {
+      liveConfirm.placeholder = data.confirmText;
+    }
+  } catch (error) {
+    if (liveStatus) {
+      liveStatus.textContent = error.message;
+    }
+    if (liveTradeButton) {
+      liveTradeButton.disabled = true;
+    }
+  }
+}
+
+async function executeLiveTrade(event) {
+  event.preventDefault();
+  if (!sessionId) {
+    liveStatus.textContent = "Connect to FOREX.com first.";
+    return;
+  }
+
+  const settings = new FormData(settingsForm);
+  const formData = new FormData(liveTradeForm);
+  const payload = {
+    sessionId,
+    market: formData.get("market"),
+    quantity: formData.get("quantity"),
+    confirmText: formData.get("confirmText"),
+    riskPerTrade: settings.get("riskPerTrade") || 1,
+    dailyStop: settings.get("dailyStop") || 4,
+    rewardRiskRatio: settings.get("rewardRiskRatio") || 2,
+  };
+
+  liveStatus.textContent = "Checking strategy and safety limits...";
+  liveTradeButton.disabled = true;
+
+  try {
+    const response = await fetchWithTimeout("/api/live/trade", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }, 25000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Live trade was not placed.");
+    }
+
+    const decision = data.decision || {};
+    liveResult.hidden = false;
+    liveOrderStatus.textContent = "Sent to FOREX.com";
+    liveOrderMarket.textContent = decision.market || payload.market;
+    liveOrderDirection.textContent = decision.direction || "--";
+    liveOrderQuantity.textContent = payload.quantity;
+    liveOrderEntry.textContent = decision.lastPrice ?? "--";
+    liveOrderStop.textContent = decision.suggestedStop ?? "--";
+    liveOrderTarget.textContent = decision.suggestedTakeProfit ?? "--";
+    liveOrderReason.textContent = data.warning || "Live order sent. Confirm the fill, stop, and limit inside FOREX.com.";
+    liveStatus.textContent = "Live order sent. Check FOREX.com now.";
+    await Promise.all([loadSnapshot(), loadSupabaseCheck()]);
+  } catch (error) {
+    liveStatus.textContent = error.message;
+  } finally {
+    await loadLiveTradingStatus();
+  }
+}
+
 on(runBotButton, "click", async () => {
   await runBotRequest("/api/bot/run", "Running EUR/USD simulation...");
 });
@@ -686,6 +780,7 @@ on(candlesForm, "submit", (event) => {
 on(demoRefreshButton, "click", loadDemoPositions);
 on(demoOpenButton, "click", openDemoPosition);
 on(demoMarkButton, "click", markDemoPositions);
+on(liveTradeForm, "submit", executeLiveTrade);
 
 on(refreshButton, "click", loadSnapshot);
 on(marketForm, "submit", (event) => {
@@ -705,5 +800,10 @@ loadSupabaseCheck().catch((error) => {
 loadDemoPositions().catch((error) => {
   if (demoStatus) {
     demoStatus.textContent = error.message;
+  }
+});
+loadLiveTradingStatus().catch((error) => {
+  if (liveStatus) {
+    liveStatus.textContent = error.message;
   }
 });

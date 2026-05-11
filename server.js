@@ -23,6 +23,11 @@ const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const defaultProfileName = process.env.DEFAULT_PROFILE_NAME || "Marcello Gambino";
 const defaultProfileEmail = process.env.DEFAULT_PROFILE_EMAIL || "marcello@example.com";
 const forexFetchTimeoutMs = Number(process.env.FOREXCOM_FETCH_TIMEOUT_MS || 8000);
+const liveTradingEnabled = String(process.env.ENABLE_LIVE_TRADING || "false").toLowerCase() === "true";
+const liveTradingConfirmText = process.env.LIVE_TRADING_CONFIRM_TEXT || "I UNDERSTAND LIVE TRADING CAN LOSE MONEY";
+const maxLiveTradeQuantity = Number(process.env.MAX_LIVE_TRADE_QUANTITY || 1000);
+const maxDailyLiveTrades = Number(process.env.MAX_DAILY_LIVE_TRADES || 1);
+const maxOpenPositions = Number(process.env.MAX_OPEN_POSITIONS || 1);
 
 const sessions = new Map();
 const marginCache = new Map();
@@ -382,7 +387,7 @@ function snapshotMargin(snapshot) {
 
   if (snapshot.balance_value !== null && snapshot.balance_value !== undefined) {
     return {
-      [snapshot.balance_key || "AccountValue"]: Number(snapshot.balance_value),
+      [snapshot.balance_key || "AccountValue"]: parseBrokerNumber(snapshot.balance_value),
       source: snapshot.source || "account_snapshots",
       updatedAt: snapshot.updated_at,
     };
@@ -413,6 +418,19 @@ function getPrimaryTradingAccount(account) {
 
 function firstPresent(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== "");
+}
+
+function parseBrokerNumber(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const number = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(number) ? number : null;
 }
 
 function findTradingAccounts(account) {
@@ -453,10 +471,16 @@ function normaliseMarginUpdate(update) {
 
 function pickMarginBalance(margin) {
   const candidateKeys = [
-    "Cash",
-    "cash",
     "NetEquity",
     "netEquity",
+    "AccountValue",
+    "accountValue",
+    "Balance",
+    "balance",
+    "ClientAccountBalance",
+    "clientAccountBalance",
+    "Cash",
+    "cash",
     "TradingResource",
     "tradingResource",
     "TradeableFunds",
@@ -472,8 +496,8 @@ function pickMarginBalance(margin) {
   ];
 
   for (const key of candidateKeys) {
-    const value = Number(margin?.[key]);
-    if (Number.isFinite(value)) {
+    const value = parseBrokerNumber(margin?.[key]);
+    if (value !== null) {
       return {
         key,
         value,
@@ -482,6 +506,10 @@ function pickMarginBalance(margin) {
   }
 
   return null;
+}
+
+function accountFallbackBalance(account) {
+  return pickMarginBalance(account);
 }
 
 function seededPriceSeries(seedText, length = 80) {
@@ -778,6 +806,19 @@ function runLivePriceDecision({ price, riskPerTrade = 1.5, dailyStop = 4, balanc
   }
 
   return decision;
+}
+
+function oppositeDirection(direction) {
+  return String(direction).toUpperCase() === "BUY" ? "sell" : "buy";
+}
+
+function normaliseTradeDirection(direction) {
+  return String(direction).toUpperCase() === "BUY" ? "buy" : "sell";
+}
+
+function todaysIsoStart() {
+  const now = new Date();
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
 }
 
 function getDemoPositions(profileId) {
@@ -1105,6 +1146,7 @@ async function handleForexSnapshot(req, res, url) {
         connectedAt: session.connectedAt,
         account: session.account,
         margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
+        fallbackBalance: accountFallbackBalance(session.account),
         accountSnapshot: savedSnapshot,
         primaryTradingAccount: null,
         positions: [],
@@ -1134,6 +1176,7 @@ async function handleForexSnapshot(req, res, url) {
       connectedAt: session.connectedAt,
       account: session.account,
       margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
+      fallbackBalance: accountFallbackBalance(session.account),
       accountSnapshot: savedSnapshot,
       primaryTradingAccount: tradingAccount,
       positions: normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]),
@@ -1163,13 +1206,14 @@ async function handleForexMargin(req, res, url) {
 
     const clientAccountId = session.account.clientAccountId;
     const cached = marginCache.get(clientAccountId) || session.account.margin || session.account.cachedMargin;
-    if (cached) {
+    const cachedBalance = pickMarginBalance(cached);
+    if (cached && cachedBalance) {
       sendJson(res, 200, {
         ok: true,
         source: "cache",
         clientAccountId,
         margin: cached,
-        balance: pickMarginBalance(cached),
+        balance: cachedBalance,
       });
       return;
     }
@@ -1186,6 +1230,22 @@ async function handleForexMargin(req, res, url) {
         balance: savedBalance,
         updatedAt: savedSnapshot.updated_at,
         note: "This value was written by the always-on trading engine.",
+      });
+      return;
+    }
+
+    const fallbackAccountBalance = accountFallbackBalance(session.account);
+    if (fallbackAccountBalance && process.env.VERCEL) {
+      sendJson(res, 200, {
+        ok: true,
+        source: "FOREX.com account snapshot",
+        clientAccountId,
+        margin: {
+          [fallbackAccountBalance.key]: fallbackAccountBalance.value,
+          receivedAt: session.connectedAt,
+        },
+        balance: fallbackAccountBalance,
+        warning: "Using the login account snapshot because Vercel cannot reliably hold the Lightstreamer margin stream.",
       });
       return;
     }
@@ -1228,16 +1288,17 @@ async function handleForexMargin(req, res, url) {
       session?.account?.clientAccountBalance
     );
     if (fallbackBalance !== undefined && fallbackBalance !== null) {
+      const parsedFallbackBalance = parseBrokerNumber(fallbackBalance);
       sendJson(res, 200, {
         ok: true,
         source: "account snapshot fallback",
         margin: {
-          AccountValue: fallbackBalance,
+          AccountValue: parsedFallbackBalance,
           receivedAt: new Date().toISOString(),
         },
         balance: {
           key: "AccountValue",
-          value: Number(fallbackBalance),
+          value: parsedFallbackBalance,
         },
         warning: error.message,
       });
@@ -1554,6 +1615,223 @@ async function handleTradeLog(req, res) {
       ok: true,
       profile,
       tradeLog: data,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
+async function handleLiveTradingStatus(req, res) {
+  sendJson(res, 200, {
+    ok: true,
+    liveTradingEnabled,
+    confirmText: liveTradingConfirmText,
+    limits: {
+      maxLiveTradeQuantity,
+      maxDailyLiveTrades,
+      maxOpenPositions,
+    },
+    message: liveTradingEnabled
+      ? "Live trading is enabled on this backend. Use small size and demo-test first."
+      : "Live trading is locked. Set ENABLE_LIVE_TRADING=true on the always-on backend only when you are ready.",
+  });
+}
+
+async function countTodayLiveTrades(profileId) {
+  const supabase = await getSupabaseAdmin();
+  const { count, error } = await supabase
+    .from("trade_logs")
+    .select("id", { count: "exact", head: true })
+    .eq("profile_id", profileId)
+    .eq("status", "live_order_placed")
+    .gte("created_at", todaysIsoStart());
+
+  if (error) {
+    throw error;
+  }
+
+  return count || 0;
+}
+
+async function handleLiveTradeExecute(req, res) {
+  try {
+    const body = JSON.parse((await readBody(req)) || "{}");
+    if (!liveTradingEnabled) {
+      sendJson(res, 403, {
+        ok: false,
+        error: "Live trading is disabled on this backend.",
+        nextStep: "Run the trading engine on an always-on backend and set ENABLE_LIVE_TRADING=true only after demo testing.",
+      });
+      return;
+    }
+
+    if (String(body.confirmText || "").trim() !== liveTradingConfirmText) {
+      sendJson(res, 400, {
+        ok: false,
+        error: `Type exactly: ${liveTradingConfirmText}`,
+      });
+      return;
+    }
+
+    const session = await getStoredSession(body.sessionId);
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first.",
+      });
+      return;
+    }
+
+    const tradingAccount = getPrimaryTradingAccount(session.account);
+    if (!tradingAccount?.tradingAccountId) {
+      throw new Error("FOREX.com did not return a TradingAccountId for live execution.");
+    }
+
+    const quantity = Number(body.quantity || 0);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new Error("Enter a valid live trade quantity.");
+    }
+
+    if (quantity > maxLiveTradeQuantity) {
+      throw new Error(`Quantity is above the backend max of ${maxLiveTradeQuantity}.`);
+    }
+
+    const marketName = String(body.market || "EUR/USD").trim();
+    const riskPerTrade = Number(body.riskPerTrade ?? 1.5);
+    const dailyStop = Number(body.dailyStop ?? 4);
+    const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
+    if (riskPerTrade > 1) {
+      throw new Error("Live risk per trade is capped at 1% for this prototype.");
+    }
+
+    const profile = await getOrCreateDefaultProfile();
+    const todaysLiveTrades = await countTodayLiveTrades(profile.id);
+    if (todaysLiveTrades >= maxDailyLiveTrades) {
+      throw new Error(`Daily live trade limit reached (${maxDailyLiveTrades}).`);
+    }
+
+    const positions = await getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccount.tradingAccountId })}`, forexHeaders(session));
+    const openPositions = normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]);
+    if (openPositions.length >= maxOpenPositions) {
+      throw new Error(`Open position limit reached (${maxOpenPositions}). Close or review positions before placing another live trade.`);
+    }
+
+    const market = await findMarket(session, marketName);
+    const [livePrice] = await subscribePricesOnce({ session, markets: [market] });
+    let decision = await runCandleStrategy({
+      session,
+      market: marketName,
+      riskPerTrade,
+      dailyStop,
+      rewardRiskRatio,
+      balance: 0,
+    });
+
+    if (livePrice?.mid) {
+      decision.lastPrice = livePrice.mid;
+      decision.liveBid = livePrice.bid;
+      decision.liveOffer = livePrice.offer;
+      decision.liveSpread = livePrice.spread;
+    }
+
+    if (!["BUY", "SELL"].includes(decision.direction) || decision.status !== "simulated_signal") {
+      throw new Error(`No live order placed. Strategy decision was ${decision.direction}: ${decision.reason}`);
+    }
+
+    if (!(decision.expectedProfit > decision.expectedRisk) || Number(decision.rewardRiskRatio) < 2) {
+      throw new Error("No live order placed. Reward/risk rule did not pass.");
+    }
+
+    const bidPrice = Number(livePrice?.bid || decision.lastPrice);
+    const offerPrice = Number(livePrice?.offer || decision.lastPrice);
+    if (!Number.isFinite(bidPrice) || !Number.isFinite(offerPrice)) {
+      throw new Error("No live order placed. FOREX.com did not return a tradable bid/offer.");
+    }
+
+    const closingDirection = oppositeDirection(decision.direction);
+    const orderRequest = {
+      IfDone: [{
+        Stop: {
+          ExpiryDateTimeUTC: null,
+          Guaranteed: false,
+          Direction: closingDirection,
+          Quantity: quantity,
+          Applicability: "GTC",
+          TriggerPrice: decision.suggestedStop,
+          OrderId: 0,
+        },
+        Limit: {
+          ExpiryDateTimeUTC: null,
+          Direction: closingDirection,
+          Quantity: quantity,
+          Applicability: "GTC",
+          TriggerPrice: decision.suggestedTakeProfit,
+          OrderId: 0,
+        },
+      }],
+      Direction: normaliseTradeDirection(decision.direction),
+      ExpiryDateTimeUTCDate: null,
+      LastChangedDateTimeUTCDate: null,
+      OcoOrder: null,
+      Type: null,
+      ExpiryDateTimeUTC: null,
+      Applicability: null,
+      TriggerPrice: null,
+      BidPrice: bidPrice,
+      AuditId: `forex-auto-bot-${crypto.randomUUID()}`,
+      AutoRollover: false,
+      MarketId: market.marketId,
+      OfferPrice: offerPrice,
+      OrderId: 0,
+      Currency: null,
+      Quantity: quantity,
+      QuoteId: null,
+      LastChangedDateTimeUTC: null,
+      PositionMethodId: 1,
+      TradingAccountId: tradingAccount.tradingAccountId,
+      MarketName: market.name,
+      Status: null,
+      isTrade: true,
+    };
+
+    const orderResponse = await postJson(`${apiBase}/order/newtradeorder`, orderRequest, forexHeaders(session));
+    const brokerOrderId = firstPresent(orderResponse.OrderId, orderResponse.orderId, orderResponse.DealId, orderResponse.dealId, orderResponse.Reference);
+    const supabase = await getSupabaseAdmin();
+    const { data: tradeLog, error } = await supabase
+      .from("trade_logs")
+      .insert({
+        profile_id: profile.id,
+        broker_order_id: brokerOrderId ? String(brokerOrderId) : null,
+        market: market.name,
+        direction: decision.direction,
+        quantity,
+        entry_price: decision.lastPrice,
+        exit_price: null,
+        profit_loss: null,
+        status: "live_order_placed",
+        reason: `LIVE ORDER SENT. ${decision.reason} Stop ${decision.suggestedStop}, take profit ${decision.suggestedTakeProfit}.`,
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      mode: "live",
+      warning: "Live order was sent to FOREX.com. Check FOREX.com immediately to confirm fill, stop, and limit.",
+      decision,
+      orderRequest: {
+        ...orderRequest,
+        AuditId: "hidden",
+      },
+      orderResponse,
+      tradeLog,
     });
   } catch (error) {
     sendJson(res, 500, {
@@ -2039,6 +2317,16 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && url.pathname === "/api/trades/log") {
     handleTradeLog(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/live/status") {
+    handleLiveTradingStatus(req, res);
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/live/trade") {
+    handleLiveTradeExecute(req, res);
     return;
   }
 

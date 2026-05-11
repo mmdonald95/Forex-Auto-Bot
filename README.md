@@ -103,7 +103,7 @@ Simulation only:
 - Top-15 scan decisions
 - Trade placement
 
-Live FOREX.com order placement is not enabled yet.
+Live FOREX.com order placement is available only when the backend explicitly enables it with `ENABLE_LIVE_TRADING=true`. Keep it disabled until demo-mode testing is reliable.
 
 ## Always-On Trading Engine
 
@@ -124,6 +124,31 @@ Recommended production setup:
 5. Leave live order placement disabled until demo trading is tested.
 
 The engine writes the latest `CLIENTACCOUNTMARGIN` balance into Supabase `account_snapshots`. The Vercel dashboard can read that table when Vercel cannot maintain the live Lightstreamer connection itself.
+
+## Live Trade Execution
+
+Live execution is locked by default. To unlock it on an always-on backend, set:
+
+```env
+ENABLE_LIVE_TRADING=true
+LIVE_TRADING_CONFIRM_TEXT=I UNDERSTAND LIVE TRADING CAN LOSE MONEY
+MAX_LIVE_TRADE_QUANTITY=1000
+MAX_DAILY_LIVE_TRADES=1
+MAX_OPEN_POSITIONS=1
+```
+
+The live endpoint:
+
+- Runs the strategy first
+- Requires BUY or SELL, never HOLD
+- Requires reward:risk of at least 2:1
+- Caps risk per trade at 1% in live mode
+- Checks the daily live trade limit
+- Checks the open position limit
+- Sends a FOREX.com market order with attached stop and take-profit limit
+- Logs the live order in Supabase `trade_logs`
+
+The official StoneX/CityIndex docs show market trades are sent to `POST /TradingAPI/order/newtradeorder`, and that new trades can include attached conditional closing stop and limit orders.
 
 ## Files Not To Commit
 
