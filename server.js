@@ -249,7 +249,7 @@ async function getOrCreateDefaultProfile() {
   return data;
 }
 
-async function saveBrokerConnection({ forexUsername, isDemo = true }) {
+async function saveBrokerConnection({ forexUsername, isDemo = false }) {
   const supabase = await getSupabaseAdmin();
   const profile = await getOrCreateDefaultProfile();
   const { data, error } = await supabase
@@ -287,7 +287,7 @@ async function saveForexSession({ localSessionId, username, sessionToken, accoun
         account,
         expiresAt,
       }),
-      is_demo: true,
+      is_demo: false,
     })
     .select("*")
     .single();
@@ -509,7 +509,52 @@ function pickMarginBalance(margin) {
 }
 
 function accountFallbackBalance(account) {
-  return pickMarginBalance(account);
+  return pickMarginBalance(account) || pickMarginBalance(getPrimaryTradingAccount(account));
+}
+
+async function saveAccountValueSnapshot({ account, source = "FOREX.com account snapshot" }) {
+  const balance = accountFallbackBalance(account);
+  const clientAccountId = account?.clientAccountId;
+  if (!clientAccountId || !balance) {
+    return null;
+  }
+
+  try {
+    const supabase = await getSupabaseAdmin();
+    const profile = await getOrCreateDefaultProfile();
+    const primary = getPrimaryTradingAccount(account);
+    const { data, error } = await supabase
+      .from("account_snapshots")
+      .upsert({
+        profile_id: profile.id,
+        broker: "FOREX.com",
+        client_account_id: String(clientAccountId),
+        trading_account_id: primary?.tradingAccountId ? String(primary.tradingAccountId) : null,
+        currency: account.clientAccountCurrency || "USD",
+        balance_value: balance.value,
+        balance_key: balance.key,
+        source,
+        raw_margin: {
+          [balance.key]: balance.value,
+          receivedAt: new Date().toISOString(),
+        },
+        raw_account: account,
+        updated_at: new Date().toISOString(),
+      }, {
+        onConflict: "broker,client_account_id",
+      })
+      .select("*")
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  } catch (error) {
+    writeDebug("supabase-account-snapshot-save-error", { error: error.message });
+    return null;
+  }
 }
 
 function seededPriceSeries(seedText, length = 80) {
@@ -1077,6 +1122,11 @@ async function handleForexConnect(req, res) {
       writeDebug("supabase-session-save-error", { error: error.message });
     }
 
+    const savedAccountSnapshot = await saveAccountValueSnapshot({
+      account: sessions.get(localSessionId).account,
+      source: "FOREX.com login account snapshot",
+    });
+
     sendJson(res, 200, {
       ok: true,
       localSessionId,
@@ -1084,6 +1134,7 @@ async function handleForexConnect(req, res) {
       account: sessions.get(localSessionId).account,
       savedConnection,
       savedSession: savedSession ? { id: savedSession.id, created_at: savedSession.created_at } : null,
+      savedAccountSnapshot: savedAccountSnapshot ? { id: savedAccountSnapshot.id, updated_at: savedAccountSnapshot.updated_at } : null,
     });
   } catch (error) {
     sendJson(res, 502, {
@@ -1140,13 +1191,18 @@ async function handleForexSnapshot(req, res, url) {
     const tradingAccount = getPrimaryTradingAccount(session.account);
     if (!tradingAccount) {
       const savedSnapshot = await loadLatestAccountSnapshot(session.account.clientAccountId);
+      const cachedMargin = marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot);
+      const fallbackBalance = accountFallbackBalance(session.account);
+      const accountValue = pickMarginBalance(cachedMargin) || fallbackBalance;
       sendJson(res, 200, {
         ok: true,
         warning: "No trading account list was returned, so positions and trade history are unavailable until FOREX.com returns a TradingAccountId.",
         connectedAt: session.connectedAt,
         account: session.account,
-        margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
-        fallbackBalance: accountFallbackBalance(session.account),
+        margin: cachedMargin || (accountValue ? { [accountValue.key]: accountValue.value, source: "FOREX.com account snapshot" } : null),
+        fallbackBalance,
+        accountValue,
+        accountValueSource: accountValue ? cachedMargin ? "saved/streamed margin data" : "FOREX.com account snapshot" : null,
         accountSnapshot: savedSnapshot,
         primaryTradingAccount: null,
         positions: [],
@@ -1159,6 +1215,9 @@ async function handleForexSnapshot(req, res, url) {
     const tradingAccountId = tradingAccount.tradingAccountId;
     const auth = forexHeaders(session);
     const savedSnapshot = await loadLatestAccountSnapshot(session.account.clientAccountId);
+    const cachedMargin = marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot);
+    const fallbackBalance = accountFallbackBalance(session.account);
+    const accountValue = pickMarginBalance(cachedMargin) || fallbackBalance;
     const [positionsResult, activeOrdersResult, tradeHistoryResult] = await Promise.allSettled([
       getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
       getJson(`${apiBase}/order/activestoplimitorders?${buildQuery({ TradingAccountId: tradingAccountId })}`, auth),
@@ -1175,8 +1234,10 @@ async function handleForexSnapshot(req, res, url) {
       ok: true,
       connectedAt: session.connectedAt,
       account: session.account,
-      margin: marginCache.get(session.account.clientAccountId) || snapshotMargin(savedSnapshot),
-      fallbackBalance: accountFallbackBalance(session.account),
+      margin: cachedMargin || (accountValue ? { [accountValue.key]: accountValue.value, source: "FOREX.com account snapshot" } : null),
+      fallbackBalance,
+      accountValue,
+      accountValueSource: accountValue ? cachedMargin ? "saved/streamed margin data" : "FOREX.com account snapshot" : null,
       accountSnapshot: savedSnapshot,
       primaryTradingAccount: tradingAccount,
       positions: normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]),
@@ -1235,7 +1296,7 @@ async function handleForexMargin(req, res, url) {
     }
 
     const fallbackAccountBalance = accountFallbackBalance(session.account);
-    if (fallbackAccountBalance && process.env.VERCEL) {
+    if (fallbackAccountBalance) {
       sendJson(res, 200, {
         ok: true,
         source: "FOREX.com account snapshot",
@@ -1245,7 +1306,9 @@ async function handleForexMargin(req, res, url) {
           receivedAt: session.connectedAt,
         },
         balance: fallbackAccountBalance,
-        warning: "Using the login account snapshot because Vercel cannot reliably hold the Lightstreamer margin stream.",
+        warning: process.env.VERCEL
+          ? "Using the FOREX.com account snapshot because Vercel cannot reliably hold the Lightstreamer margin stream."
+          : "Using the FOREX.com account snapshot. Start the always-on engine for continuous Lightstreamer updates.",
       });
       return;
     }
@@ -1635,7 +1698,7 @@ async function handleLiveTradingStatus(req, res) {
       maxOpenPositions,
     },
     message: liveTradingEnabled
-      ? "Live trading is enabled on this backend. Use small size and demo-test first."
+      ? "Live trading is enabled on this backend. Use small size and verify each fill in FOREX.com."
       : "Live trading is locked. Set ENABLE_LIVE_TRADING=true on the always-on backend only when you are ready.",
   });
 }
@@ -1704,7 +1767,7 @@ async function handleLiveTradeExecute(req, res) {
       sendJson(res, 403, {
         ok: false,
         error: "Live trading is disabled on this backend.",
-        nextStep: "Run the trading engine on an always-on backend and set ENABLE_LIVE_TRADING=true only after demo testing.",
+        nextStep: "Run the trading engine on an always-on backend and set ENABLE_LIVE_TRADING=true only after validating the strategy and risk controls.",
       });
       return;
     }
@@ -1931,7 +1994,7 @@ async function handleBotRun(req, res) {
         exit_price: null,
         profit_loss: null,
         status: result.status,
-        reason: `${result.reason} Short MA ${result.shortMa}, long MA ${result.longMa}. Demo mode only; no live order sent.`,
+        reason: `${result.reason} Short MA ${result.shortMa}, long MA ${result.longMa}. Analysis logged; no live order sent from this panel.`,
       })
       .select("*")
       .single();
@@ -1942,7 +2005,7 @@ async function handleBotRun(req, res) {
 
     sendJson(res, 200, {
       ok: true,
-      mode: "simulation",
+      mode: "analysis",
       balanceSource: balanceInfo?.key || null,
       priceSource: result.priceSource,
       decision: result,
@@ -2028,7 +2091,7 @@ async function handleBotScan(req, res) {
         exit_price: null,
         profit_loss: null,
         status: signal ? "simulated_scan_signal" : "simulated_scan_hold",
-        reason: `Top-15 scan selected ${selected.market}: ${selected.reason} Expected risk ${selected.expectedRisk.toFixed(2)}, expected profit ${selected.expectedProfit.toFixed(2)}. Demo mode only.`,
+        reason: `Top-15 scan selected ${selected.market}: ${selected.reason} Expected risk ${selected.expectedRisk.toFixed(2)}, expected profit ${selected.expectedProfit.toFixed(2)}. Analysis logged; no live order sent from this panel.`,
       })
       .select("*")
       .single();
@@ -2039,7 +2102,7 @@ async function handleBotScan(req, res) {
 
     sendJson(res, 200, {
       ok: true,
-      mode: "simulation",
+      mode: "analysis",
       scannedMarkets: markets.length,
       balanceSource: balanceInfo?.key || null,
       priceSource: candleDecisions.length ? "FOREX.com candle history" : livePrices.length ? "FOREX.com PRICES stream" : "simulated fallback",

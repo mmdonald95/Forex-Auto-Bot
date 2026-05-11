@@ -29,6 +29,7 @@ const settingsStatus = document.querySelector("[data-settings-status]");
 const runBotButton = document.querySelector("[data-run-bot]");
 const scanBotButton = document.querySelector("[data-scan-bot]");
 const botStatus = document.querySelector("[data-bot-status]");
+const botMode = document.querySelector("[data-bot-mode]");
 const botResult = document.querySelector("[data-bot-result]");
 const decisionDirection = document.querySelector("[data-decision-direction]");
 const decisionPrice = document.querySelector("[data-decision-price]");
@@ -354,6 +355,7 @@ async function loadSnapshot() {
   const positions = data.positions || [];
   const history = data.tradeHistory || [];
   const currency = account.clientAccountCurrency || "USD";
+  const accountValueBalance = data.accountValue?.value !== undefined ? parseBrokerNumber(data.accountValue.value) : null;
   const marginBalance = data.margin ? numericValue(data.margin, [
     "Cash",
     "cash",
@@ -371,7 +373,7 @@ async function loadSnapshot() {
     "marginAvailable",
   ]) : null;
   const snapshotBalance = data.fallbackBalance?.value !== undefined ? parseBrokerNumber(data.fallbackBalance.value) : null;
-  const possibleBalance = marginBalance ?? snapshotBalance ?? numericValue(account, [
+  const possibleBalance = accountValueBalance ?? marginBalance ?? snapshotBalance ?? numericValue(account, [
     "netEquity",
     "accountValue",
     "balance",
@@ -382,9 +384,9 @@ async function loadSnapshot() {
   const made = sumPositive(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]);
   const spent = sumNegativeAbs(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]) || estimateOpenCost(positions);
 
-  dashboardStatus.textContent = data.warning || data.warnings?.length
-    ? `${data.warning || data.warnings.join(" ")} Loading live FOREX.com margin balance...`
-    : "Dashboard synced. Loading live FOREX.com margin balance...";
+  dashboardStatus.textContent = possibleBalance === null
+    ? "Connected, but no account value was returned yet."
+    : `FOREX.com account value loaded from ${data.accountValueSource || "account snapshot"}.`;
   accountValue.textContent = possibleBalance === null ? "--" : money(possibleBalance, currency);
   moneyMade.textContent = money(made || null, currency);
   moneySpent.textContent = money(spent || null, currency);
@@ -394,8 +396,10 @@ async function loadSnapshot() {
   accountCurrency.textContent = currency;
   clientAccount.textContent = account.clientAccountId || "--";
   tradingAccount.textContent = primary.tradingAccountId || "Not returned";
-  balanceSource.textContent = marginBalance !== null
-    ? "CLIENTACCOUNTMARGIN or saved engine snapshot"
+  balanceSource.textContent = accountValueBalance !== null
+    ? (data.accountValueSource || `FOREX.com ${data.accountValue.key}`)
+    : marginBalance !== null
+      ? "CLIENTACCOUNTMARGIN or saved engine snapshot"
     : snapshotBalance !== null
       ? `FOREX.com account snapshot (${data.fallbackBalance.key})`
       : "Waiting for live margin stream";
@@ -427,10 +431,14 @@ async function loadSnapshot() {
     "No trade history returned."
   );
 
-  loadMargin(currency);
+  if (possibleBalance === null) {
+    loadMargin(currency);
+  } else {
+    loadMargin(currency, { quiet: true });
+  }
 }
 
-async function loadMargin(currency = "USD") {
+async function loadMargin(currency = "USD", options = {}) {
   try {
     const response = await fetchWithTimeout(`/api/forexcom/margin?sessionId=${encodeURIComponent(sessionId)}`, {}, 12000);
     const data = await readJsonResponse(response);
@@ -444,17 +452,23 @@ async function loadMargin(currency = "USD") {
     if (data.balance?.value !== null && data.balance?.value !== undefined) {
       accountValue.textContent = money(data.balance.value, currency);
     }
-    balanceSource.textContent = data.balance?.key
-      ? `CLIENTACCOUNTMARGIN.${data.balance.key}`
-      : "CLIENTACCOUNTMARGIN returned no known balance field";
-    dashboardStatus.textContent = data.warning
-      ? `Using fallback balance. Streaming warning: ${data.warning}`
+    balanceSource.textContent = data.source
+      ? `${data.source} (${data.balance?.key || "value"})`
       : data.balance?.key
-      ? "Live FOREX.com account value loaded from streaming margin data."
-      : "Connected, but FOREX.com did not return a recognized balance field.";
+        ? `CLIENTACCOUNTMARGIN.${data.balance.key}`
+        : "FOREX.com returned no known balance field";
+    if (!options.quiet || data.source !== "FOREX.com account snapshot") {
+      dashboardStatus.textContent = data.warning && data.source !== "FOREX.com account snapshot"
+        ? `Using fallback balance. Streaming warning: ${data.warning}`
+        : data.balance?.key
+          ? `FOREX.com account value loaded from ${data.source || "streaming margin data"}.`
+          : "Connected, but FOREX.com did not return a recognized balance field.";
+    }
   } catch (error) {
-    dashboardStatus.textContent = "Live margin stream did not answer; showing the latest account snapshot when available.";
-    balanceSource.textContent = "Margin request failed";
+    if (!options.quiet) {
+      dashboardStatus.textContent = "Live margin stream did not answer; showing the latest account snapshot when available.";
+      balanceSource.textContent = "Margin request failed";
+    }
   }
 }
 
@@ -532,6 +546,10 @@ async function loadCandles(formData = new FormData(candlesForm)) {
 }
 
 async function loadDemoPositions() {
+  if (!demoStatus) {
+    return;
+  }
+
   try {
     const response = await fetchWithTimeout("/api/demo/positions", {}, 10000);
     const data = await readJsonResponse(response);
@@ -546,6 +564,10 @@ async function loadDemoPositions() {
 }
 
 async function openDemoPosition() {
+  if (!demoStatus) {
+    return;
+  }
+
   demoStatus.textContent = "Opening simulated position...";
   const formData = new FormData(settingsForm);
   const payload = {
@@ -577,6 +599,10 @@ async function openDemoPosition() {
 }
 
 async function markDemoPositions() {
+  if (!demoStatus) {
+    return;
+  }
+
   demoStatus.textContent = "Marking open demo positions...";
   try {
     const response = await fetch("/api/demo/mark", {
@@ -711,6 +737,9 @@ async function loadLiveTradingStatus() {
     liveStatus.textContent = data.liveTradingEnabled
       ? `Enabled. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day.`
       : "Locked by backend.";
+    if (botMode) {
+      botMode.textContent = data.liveTradingEnabled ? "Live Armed" : "Live Locked";
+    }
     if (liveTradeButton) {
       liveTradeButton.disabled = !data.liveTradingEnabled;
     }
@@ -720,6 +749,9 @@ async function loadLiveTradingStatus() {
   } catch (error) {
     if (liveStatus) {
       liveStatus.textContent = error.message;
+    }
+    if (botMode) {
+      botMode.textContent = "Live Locked";
     }
     if (liveTradeButton) {
       liveTradeButton.disabled = true;
@@ -782,7 +814,7 @@ async function executeLiveTrade(event) {
 }
 
 on(runBotButton, "click", async () => {
-  await runBotRequest("/api/bot/run", "Running EUR/USD simulation...");
+  await runBotRequest("/api/bot/run", "Running EUR/USD strategy analysis...");
 });
 
 on(scanBotButton, "click", async () => {
