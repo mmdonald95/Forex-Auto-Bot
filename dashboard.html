@@ -99,7 +99,14 @@
       </article>
     </section>
 
-    <section class="dashboard-card">
+    <nav class="dashboard-tabs" aria-label="Dashboard tools">
+      <button class="dashboard-tab is-active" type="button" data-dashboard-tab="strategy">Strategy</button>
+      <button class="dashboard-tab" type="button" data-dashboard-tab="live">Live trade</button>
+      <button class="dashboard-tab" type="button" data-dashboard-tab="markets">Markets</button>
+      <button class="dashboard-tab" type="button" data-dashboard-tab="account">Account</button>
+    </nav>
+
+    <section class="dashboard-card dashboard-tab-panel is-active" data-dashboard-tab-panel="strategy">
       <div class="table-header">
         <span>Strategy engine</span>
         <span data-bot-status>Analysis only. Use live execution for orders.</span>
@@ -131,7 +138,7 @@
       </div>
     </section>
 
-    <section class="dashboard-card live-trading-card">
+    <section class="dashboard-card live-trading-card dashboard-tab-panel" data-dashboard-tab-panel="live">
       <div class="table-header">
         <span>Live trade execution</span>
         <span data-live-status>Locked by backend.</span>
@@ -186,7 +193,7 @@
       <div class="table-list live-reconcile-list" data-live-reconcile-list></div>
     </section>
 
-    <section class="dashboard-card">
+    <section class="dashboard-card dashboard-tab-panel" data-dashboard-tab-panel="markets">
       <div class="table-header">
         <span>Live FOREX.com prices</span>
         <span data-live-prices-status>Not loaded.</span>
@@ -210,7 +217,7 @@
       </div>
     </section>
 
-    <section class="dashboard-card chart-card">
+    <section class="dashboard-card chart-card dashboard-tab-panel" data-dashboard-tab-panel="markets">
       <div class="table-header">
         <span>Candlestick chart</span>
         <span data-candles-status>Connect to load candles.</span>
@@ -242,7 +249,7 @@
       </div>
     </section>
 
-    <section class="dashboard-grid">
+    <section class="dashboard-grid dashboard-tab-panel" data-dashboard-tab-panel="account">
       <article class="dashboard-card">
         <div class="table-header">
           <span>Account details</span>
@@ -273,7 +280,7 @@
       </article>
     </section>
 
-    <section class="dashboard-card">
+    <section class="dashboard-card dashboard-tab-panel" data-dashboard-tab-panel="account">
       <div class="table-header">
         <span>Open positions</span>
         <span data-dashboard-positions-status>--</span>
@@ -281,7 +288,7 @@
       <div class="table-list" data-dashboard-positions-list></div>
     </section>
 
-    <section class="dashboard-card">
+    <section class="dashboard-card dashboard-tab-panel" data-dashboard-tab-panel="account">
       <div class="table-header">
         <span>Recent trade history</span>
         <span data-dashboard-history-status>--</span>

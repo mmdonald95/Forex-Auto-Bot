@@ -18,6 +18,8 @@ const historyList = document.querySelector("[data-dashboard-history-list]");
 const refreshButton = document.querySelector("[data-refresh-dashboard]");
 const accountGreeting = document.querySelector("[data-account-greeting]");
 const signinLink = document.querySelector("[data-signin-link]");
+const dashboardTabs = document.querySelectorAll("[data-dashboard-tab]");
+const dashboardPanels = document.querySelectorAll("[data-dashboard-tab-panel]");
 const marketForm = document.querySelector("[data-dashboard-market-form]");
 const marketsStatus = document.querySelector("[data-dashboard-markets-status]");
 const marketsList = document.querySelector("[data-dashboard-markets-list]");
@@ -167,6 +169,16 @@ function on(element, eventName, handler) {
   if (element) {
     element.addEventListener(eventName, handler);
   }
+}
+
+function setDashboardTab(tabName) {
+  dashboardTabs.forEach((tab) => {
+    tab.classList.toggle("is-active", tab.dataset.dashboardTab === tabName);
+  });
+
+  dashboardPanels.forEach((panel) => {
+    panel.classList.toggle("is-active", panel.dataset.dashboardTabPanel === tabName);
+  });
 }
 
 function setRows(container, items, columns, emptyText) {
@@ -975,6 +987,9 @@ on(demoMarkButton, "click", markDemoPositions);
 on(liveTradeForm, "submit", executeLiveTrade);
 on(emergencyStopButton, "click", emergencyStop);
 on(reconcileLiveButton, "click", reconcileLiveOrders);
+dashboardTabs.forEach((tab) => {
+  on(tab, "click", () => setDashboardTab(tab.dataset.dashboardTab));
+});
 
 on(refreshButton, "click", loadSnapshot);
 on(marketForm, "submit", (event) => {
