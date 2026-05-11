@@ -117,14 +117,15 @@ function money(value, currency = "USD") {
 }
 
 function accountDisplayName(account) {
-  return firstValue(account, [
+  const value = firstValue(account, [
     "logonUserName",
     "userName",
     "UserName",
     "accountName",
     "AccountName",
-    "clientAccountId",
-  ], "Account");
+  ], "");
+
+  return /^\d+$/.test(String(value)) ? "" : value;
 }
 
 async function readJsonResponse(response) {
@@ -413,7 +414,7 @@ async function loadSnapshot() {
   openCount.textContent = positions.length;
   accountUpdated.textContent = new Date().toLocaleString();
   accountUser.textContent = account.logonUserName || "--";
-  if (accountGreeting) {
+  if (accountGreeting && displayName) {
     accountGreeting.textContent = `Welcome, ${displayName}`;
   }
   if (signinLink) {
