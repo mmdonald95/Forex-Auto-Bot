@@ -917,6 +917,15 @@ input[type="checkbox"] {
   gap: 10px;
 }
 
+.account-greeting {
+  max-width: min(38vw, 420px);
+  color: var(--white);
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dashboard-shell {
   display: grid;
   gap: 18px;
@@ -1302,6 +1311,10 @@ input[type="checkbox"] {
     grid-template-columns: 1fr;
     width: 100%;
     min-width: 0;
+  }
+
+  .account-greeting {
+    max-width: 100%;
   }
 
   .app-header-actions .button {

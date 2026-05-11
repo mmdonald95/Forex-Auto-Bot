@@ -16,6 +16,8 @@ const positionsList = document.querySelector("[data-dashboard-positions-list]");
 const historyStatus = document.querySelector("[data-dashboard-history-status]");
 const historyList = document.querySelector("[data-dashboard-history-list]");
 const refreshButton = document.querySelector("[data-refresh-dashboard]");
+const accountGreeting = document.querySelector("[data-account-greeting]");
+const signinLink = document.querySelector("[data-signin-link]");
 const marketForm = document.querySelector("[data-dashboard-market-form]");
 const marketsStatus = document.querySelector("[data-dashboard-markets-status]");
 const marketsList = document.querySelector("[data-dashboard-markets-list]");
@@ -112,6 +114,17 @@ function money(value, currency = "USD") {
     currency: currency || "USD",
     maximumFractionDigits: 2,
   }).format(Number(value));
+}
+
+function accountDisplayName(account) {
+  return firstValue(account, [
+    "logonUserName",
+    "userName",
+    "UserName",
+    "accountName",
+    "AccountName",
+    "clientAccountId",
+  ], "Account");
 }
 
 async function readJsonResponse(response) {
@@ -331,6 +344,12 @@ function estimateOpenCost(positions) {
 async function loadSnapshot() {
   if (!sessionId) {
     dashboardStatus.textContent = "No connected session found. Go back to Connection and log in first.";
+    if (accountGreeting) {
+      accountGreeting.textContent = "Not connected";
+    }
+    if (signinLink) {
+      signinLink.textContent = "Sign In";
+    }
     return;
   }
 
@@ -351,6 +370,7 @@ async function loadSnapshot() {
   }
 
   const account = data.account || {};
+  const displayName = accountDisplayName(account);
   const primary = data.primaryTradingAccount || {};
   const positions = data.positions || [];
   const history = data.tradeHistory || [];
@@ -393,6 +413,12 @@ async function loadSnapshot() {
   openCount.textContent = positions.length;
   accountUpdated.textContent = new Date().toLocaleString();
   accountUser.textContent = account.logonUserName || "--";
+  if (accountGreeting) {
+    accountGreeting.textContent = `Welcome, ${displayName}`;
+  }
+  if (signinLink) {
+    signinLink.textContent = "Reconnect";
+  }
   accountCurrency.textContent = currency;
   clientAccount.textContent = account.clientAccountId || "--";
   tradingAccount.textContent = primary.tradingAccountId || "Not returned";

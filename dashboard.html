@@ -16,8 +16,9 @@
       <span>Forex Auto Bot</span>
     </a>
     <div class="app-header-actions">
+      <span class="account-greeting" data-account-greeting>Connecting account...</span>
       <button class="button secondary dark" type="button" data-refresh-dashboard>Refresh</button>
-      <a class="button primary" href="/signin.html">Sign In</a>
+      <a class="button primary" href="/signin.html" data-signin-link>Reconnect</a>
     </div>
   </header>
 
@@ -29,8 +30,8 @@
         <p data-dashboard-status>Loading account data...</p>
       </div>
       <div class="bot-state">
-        <span>Bot mode</span>
-        <strong>Demo Guard</strong>
+        <span>Trading mode</span>
+        <strong data-bot-mode>Live Locked</strong>
       </div>
     </section>
 
@@ -100,13 +101,13 @@
 
     <section class="dashboard-card">
       <div class="table-header">
-        <span>Demo bot engine</span>
-        <span data-bot-status>Simulation only. No live orders.</span>
+        <span>Strategy engine</span>
+        <span data-bot-status>Analysis only. Use live execution for orders.</span>
       </div>
       <div class="bot-runner">
         <div>
           <p class="bot-runner-title">Moving-average strategy with profit rule</p>
-          <p>Requires expected reward to be greater than expected risk. Top-15 scan checks major liquid pairs but only logs one simulated decision.</p>
+          <p>Requires expected reward to be greater than expected risk. Top-15 scan checks major liquid pairs and logs the selected decision.</p>
         </div>
         <div class="bot-actions">
           <button class="button secondary dark" type="button" data-run-bot>Run EUR/USD</button>
@@ -227,37 +228,6 @@
       </form>
       <div class="candlestick-shell">
         <svg data-candles-chart viewBox="0 0 1000 420" role="img" aria-label="Candlestick price chart"></svg>
-      </div>
-    </section>
-
-    <section class="dashboard-card">
-      <div class="table-header">
-        <span>Demo P/L tracker</span>
-        <span data-demo-status>Simulation only.</span>
-      </div>
-      <div class="bot-runner">
-        <div>
-          <p class="bot-runner-title">Paper positions</p>
-          <p>Opens simulated positions from the strategy and marks them against FOREX.com candle prices. No live orders are sent.</p>
-        </div>
-        <div class="bot-actions">
-          <button class="button secondary dark" type="button" data-demo-refresh>Refresh Demo P/L</button>
-          <button class="button primary" type="button" data-demo-open>Open Demo Position</button>
-          <button class="button secondary dark" type="button" data-demo-mark>Mark Open Positions</button>
-        </div>
-      </div>
-      <div class="account-metrics compact">
-        <div><span>Open demo trades</span><strong data-demo-open-count>0</strong></div>
-        <div><span>Closed demo trades</span><strong data-demo-closed-count>0</strong></div>
-        <div><span>Realized demo P/L</span><strong data-demo-realized>--</strong></div>
-        <div><span>Last update</span><strong data-demo-updated>--</strong></div>
-      </div>
-      <div class="data-table">
-        <div class="table-header">
-          <span>Demo positions</span>
-          <span data-demo-table-status>--</span>
-        </div>
-        <div data-demo-list class="table-list"></div>
       </div>
     </section>
 
