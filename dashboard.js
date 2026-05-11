@@ -83,10 +83,22 @@ function firstValue(item, names, fallback = "--") {
   return fallback;
 }
 
+function parseBrokerNumber(value) {
+  if (value === null || value === undefined || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const number = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
 function numericValue(item, names) {
   const value = firstValue(item, names, null);
-  const number = Number(value);
-  return Number.isFinite(number) ? number : null;
+  return parseBrokerNumber(value);
 }
 
 function money(value, currency = "USD") {
@@ -358,13 +370,14 @@ async function loadSnapshot() {
     "MarginAvailable",
     "marginAvailable",
   ]) : null;
-  const possibleBalance = marginBalance ?? numericValue(account, [
-    "cash",
-    "balance",
-    "accountValue",
+  const snapshotBalance = data.fallbackBalance?.value !== undefined ? parseBrokerNumber(data.fallbackBalance.value) : null;
+  const possibleBalance = marginBalance ?? snapshotBalance ?? numericValue(account, [
     "netEquity",
-    "availableToTrade",
+    "accountValue",
+    "balance",
     "clientAccountBalance",
+    "cash",
+    "availableToTrade",
   ]);
   const made = sumPositive(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]);
   const spent = sumNegativeAbs(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]) || estimateOpenCost(positions);
@@ -381,7 +394,11 @@ async function loadSnapshot() {
   accountCurrency.textContent = currency;
   clientAccount.textContent = account.clientAccountId || "--";
   tradingAccount.textContent = primary.tradingAccountId || "Not returned";
-  balanceSource.textContent = marginBalance !== null ? "CLIENTACCOUNTMARGIN stream cache" : "Waiting for live margin stream";
+  balanceSource.textContent = marginBalance !== null
+    ? "CLIENTACCOUNTMARGIN or saved engine snapshot"
+    : snapshotBalance !== null
+      ? `FOREX.com account snapshot (${data.fallbackBalance.key})`
+      : "Waiting for live margin stream";
 
   positionsStatus.textContent = `${positions.length} open position(s)`;
   historyStatus.textContent = `${history.length} recent trade(s)`;
@@ -436,7 +453,7 @@ async function loadMargin(currency = "USD") {
       ? "Live FOREX.com account value loaded from streaming margin data."
       : "Connected, but FOREX.com did not return a recognized balance field.";
   } catch (error) {
-    dashboardStatus.textContent = "Live margin balance failed to load. Use http://localhost:3000 and reconnect.";
+    dashboardStatus.textContent = "Live margin stream did not answer; showing the latest account snapshot when available.";
     balanceSource.textContent = "Margin request failed";
   }
 }

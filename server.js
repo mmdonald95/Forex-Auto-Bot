@@ -1640,6 +1640,47 @@ async function handleLiveTradingStatus(req, res) {
   });
 }
 
+async function handleOpsStatus(req, res) {
+  const checks = {
+    forexApiBase: Boolean(apiBase),
+    forexStreamingBase: Boolean(streamingBase),
+    forexAppKey: Boolean(forexComAppKey),
+    supabaseUrl: Boolean(supabaseUrl),
+    supabaseServiceRoleKey: Boolean(supabaseServiceRoleKey),
+    liveTradingEnabled,
+    accountSnapshotsTable: false,
+  };
+
+  let supabaseError = null;
+  try {
+    const supabase = await getSupabaseAdmin();
+    const result = await supabase
+      .from("account_snapshots")
+      .select("id", { count: "exact", head: true });
+
+    if (result.error) {
+      throw result.error;
+    }
+    checks.accountSnapshotsTable = true;
+  } catch (error) {
+    supabaseError = error.message;
+  }
+
+  sendJson(res, 200, {
+    ok: Object.entries(checks)
+      .filter(([key]) => key !== "liveTradingEnabled")
+      .every(([, value]) => Boolean(value)),
+    runtime: process.env.VERCEL ? "vercel" : "local",
+    checks,
+    supabaseError,
+    nextSteps: [
+      checks.accountSnapshotsTable ? "account_snapshots table is ready." : "Run supabase-account-snapshots.sql in Supabase SQL Editor.",
+      liveTradingEnabled ? "Live trading is enabled; keep quantity and daily limits small." : "Live trading is locked until ENABLE_LIVE_TRADING=true is set on the always-on backend.",
+      "Run npm run engine on an always-on host for reliable live account value streaming.",
+    ],
+  });
+}
+
 async function countTodayLiveTrades(profileId) {
   const supabase = await getSupabaseAdmin();
   const { count, error } = await supabase
@@ -2322,6 +2363,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/live/status") {
     handleLiveTradingStatus(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/ops/status") {
+    handleOpsStatus(req, res);
     return;
   }
 

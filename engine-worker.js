@@ -118,6 +118,19 @@ function firstPresent(...values) {
   return values.find((value) => value !== undefined && value !== null && value !== "");
 }
 
+function parseBrokerNumber(value) {
+  if (value === undefined || value === null || value === "") {
+    return null;
+  }
+
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+
+  const number = Number(String(value).replace(/[$,\s]/g, ""));
+  return Number.isFinite(number) ? number : null;
+}
+
 function findTradingAccounts(account) {
   const directCandidates = [
     account.TradingAccounts,
@@ -195,10 +208,16 @@ function normaliseMarginUpdate(update) {
 
 function pickMarginBalance(margin) {
   const candidateKeys = [
-    "Cash",
-    "cash",
     "NetEquity",
     "netEquity",
+    "AccountValue",
+    "accountValue",
+    "Balance",
+    "balance",
+    "ClientAccountBalance",
+    "clientAccountBalance",
+    "Cash",
+    "cash",
     "TradingResource",
     "tradingResource",
     "TradeableFunds",
@@ -214,8 +233,8 @@ function pickMarginBalance(margin) {
   ];
 
   for (const key of candidateKeys) {
-    const value = Number(margin?.[key]);
-    if (Number.isFinite(value)) {
+    const value = parseBrokerNumber(margin?.[key]);
+    if (value !== null) {
       return { key, value };
     }
   }
