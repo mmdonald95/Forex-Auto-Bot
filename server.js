@@ -372,6 +372,66 @@ async function loadLatestAccountSnapshot(clientAccountId) {
   }
 }
 
+async function loadLatestAnyAccountSnapshot() {
+  try {
+    const supabase = await getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("account_snapshots")
+      .select("*")
+      .eq("broker", "FOREX.com")
+      .not("balance_value", "is", null)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      throw error;
+    }
+
+    return data || null;
+  } catch (error) {
+    writeDebug("supabase-latest-account-snapshot-load-error", { error: error.message });
+    return null;
+  }
+}
+
+async function loadLatestSessionAccountValue() {
+  try {
+    const supabase = await getSupabaseAdmin();
+    const { data, error } = await supabase
+      .from("broker_connections")
+      .select("*")
+      .eq("broker", "FOREX.com_SESSION")
+      .order("created_at", { ascending: false })
+      .limit(25);
+
+    if (error) {
+      throw error;
+    }
+
+    for (const row of data || []) {
+      try {
+        const payload = JSON.parse(row.app_key_label || "{}");
+        const balance = accountFallbackBalance(payload.account);
+        if (balance) {
+          return {
+            balance,
+            account: payload.account,
+            source: "latest FOREX.com session snapshot",
+            updatedAt: row.created_at,
+          };
+        }
+      } catch (error) {
+        writeDebug("latest-session-account-value-parse-error", { error: error.message });
+      }
+    }
+  } catch (error) {
+    writeDebug("latest-session-account-value-load-error", { error: error.message });
+  }
+
+  return null;
+}
+
 function snapshotMargin(snapshot) {
   if (!snapshot) {
     return null;
@@ -1378,6 +1438,49 @@ async function handleForexMargin(req, res, url) {
   }
 }
 
+async function handleLatestAccountValue(req, res) {
+  try {
+    const savedSnapshot = await loadLatestAnyAccountSnapshot();
+    const savedMargin = snapshotMargin(savedSnapshot);
+    const savedBalance = pickMarginBalance(savedMargin);
+    if (savedSnapshot && savedBalance) {
+      sendJson(res, 200, {
+        ok: true,
+        source: savedSnapshot.source || "Supabase account_snapshots",
+        clientAccountId: savedSnapshot.client_account_id,
+        currency: savedSnapshot.currency || "USD",
+        balance: savedBalance,
+        updatedAt: savedSnapshot.updated_at,
+      });
+      return;
+    }
+
+    const sessionValue = await loadLatestSessionAccountValue();
+    if (sessionValue?.balance) {
+      sendJson(res, 200, {
+        ok: true,
+        source: sessionValue.source,
+        clientAccountId: sessionValue.account?.clientAccountId || null,
+        currency: sessionValue.account?.clientAccountCurrency || "USD",
+        balance: sessionValue.balance,
+        updatedAt: sessionValue.updatedAt,
+      });
+      return;
+    }
+
+    sendJson(res, 404, {
+      ok: false,
+      error: "No saved FOREX.com account value is available yet.",
+      nextStep: "Reconnect to FOREX.com. If the value still does not appear, run the always-on engine so it can write account_snapshots.",
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
 async function handleForexDebug(req, res) {
   if (!fs.existsSync(forexDebugLog)) {
     sendJson(res, 200, {
@@ -2371,6 +2474,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/margin") {
     handleForexMargin(req, res, url);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forexcom/latest-account-value") {
+    handleLatestAccountValue(req, res);
     return;
   }
 

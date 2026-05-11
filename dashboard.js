@@ -458,9 +458,36 @@ async function loadSnapshot() {
   );
 
   if (possibleBalance === null) {
-    loadMargin(currency);
+    loadLatestAccountValue(currency);
   } else {
     loadMargin(currency, { quiet: true });
+  }
+}
+
+async function loadLatestAccountValue(currency = "USD") {
+  try {
+    const response = await fetchWithTimeout("/api/forexcom/latest-account-value", {}, 10000);
+    const data = await readJsonResponse(response);
+
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "No saved account value is available yet.");
+    }
+
+    if (data.balance?.value !== null && data.balance?.value !== undefined) {
+      accountValue.textContent = money(data.balance.value, data.currency || currency);
+      dashboardStatus.textContent = `FOREX.com account value loaded from ${data.source}.`;
+      balanceSource.textContent = `${data.source} (${data.balance.key})`;
+      if (data.updatedAt) {
+        accountUpdated.textContent = new Date(data.updatedAt).toLocaleString();
+      }
+      return true;
+    }
+
+    throw new Error("Saved account value did not include a recognized balance field.");
+  } catch (error) {
+    dashboardStatus.textContent = `${error.message} Reconnect to FOREX.com, then refresh.`;
+    balanceSource.textContent = "No saved account value";
+    return false;
   }
 }
 
