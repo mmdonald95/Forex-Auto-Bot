@@ -1,40 +1,21 @@
-function buildTradeJournalEntry(event = {}) {
-  const now = new Date().toISOString();
+const crypto = require("node:crypto");
+
+function buildTradeJournalEntry(input = {}) {
   return {
-    tradeId: event.tradeId || event.brokerOrderId || null,
-    strategyName: event.strategyName || "unknown",
-    market: event.market,
-    direction: event.direction,
-    entryTime: event.entryTime || now,
-    exitTime: event.exitTime || null,
-    entryPrice: event.entryPrice ?? null,
-    exitPrice: event.exitPrice ?? null,
-    stopLoss: event.stopLoss ?? null,
-    takeProfit: event.takeProfit ?? null,
-    trailingStop: event.trailingStop ?? null,
-    lotSize: event.lotSize ?? event.quantity ?? null,
-    riskPercentage: event.riskPercentage ?? null,
-    riskAmount: event.riskAmount ?? null,
-    spreadAtEntry: event.spreadAtEntry ?? null,
-    spreadAtExit: event.spreadAtExit ?? null,
-    slippage: event.slippage ?? null,
-    commission: event.commission ?? null,
-    swap: event.swap ?? null,
-    grossProfitLoss: event.grossProfitLoss ?? null,
-    netProfitLoss: event.netProfitLoss ?? event.profitLoss ?? null,
-    balanceBefore: event.balanceBefore ?? null,
-    balanceAfter: event.balanceAfter ?? null,
-    equityBefore: event.equityBefore ?? null,
-    equityAfter: event.equityAfter ?? null,
-    entryReason: event.entryReason || null,
-    exitReason: event.exitReason || null,
-    followedRules: event.followedRules !== false,
-    riskFilterTriggered: event.riskFilterTriggered || null,
-    notes: event.notes || "",
-    createdAt: now,
+    id: input.id || crypto.randomUUID(),
+    market: input.market || "EUR/USD",
+    direction: input.direction || "HOLD",
+    entry: input.entry ?? null,
+    stopLoss: input.stopLoss ?? null,
+    takeProfit: input.takeProfit ?? null,
+    riskAmount: input.riskAmount ?? null,
+    expectedProfit: input.expectedProfit ?? null,
+    result: input.result || "pending",
+    notes: input.notes || "",
+    createdAt: input.createdAt || new Date().toISOString()
   };
 }
 
 module.exports = {
-  buildTradeJournalEntry,
+  buildTradeJournalEntry
 };

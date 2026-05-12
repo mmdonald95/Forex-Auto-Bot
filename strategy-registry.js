@@ -1,47 +1,36 @@
 const strategies = new Map();
 
 function registerStrategy(strategy) {
-  if (!strategy || !strategy.id || typeof strategy.generateSignal !== "function") {
-    throw new Error("Strategy must include id and generateSignal(context).");
+  if (!strategy || !strategy.id) {
+    throw new Error("Strategy must include an id.");
   }
 
   strategies.set(strategy.id, {
+    id: strategy.id,
     name: strategy.name || strategy.id,
     version: strategy.version || "1.0.0",
-    enabled: strategy.enabled !== false,
     parameters: strategy.parameters || {},
-    generateSignal: strategy.generateSignal,
+    generateSignal: strategy.generateSignal || null
   });
+
+  return strategies.get(strategy.id);
 }
 
 function listStrategies() {
-  return Array.from(strategies.entries()).map(([id, strategy]) => ({
-    id,
+  return Array.from(strategies.values()).map(strategy => ({
+    id: strategy.id,
     name: strategy.name,
     version: strategy.version,
-    enabled: strategy.enabled,
-    parameters: strategy.parameters,
+    parameters: strategy.parameters
   }));
 }
 
 function getStrategy(id) {
-  return strategies.get(id);
-}
-
-function requireStrategy(id) {
-  const strategy = getStrategy(id);
-  if (!strategy) {
-    throw new Error(`Strategy ${id} is not registered.`);
-  }
-  if (!strategy.enabled) {
-    throw new Error(`Strategy ${id} is disabled.`);
-  }
-  return strategy;
+  return strategies.get(id) || null;
 }
 
 module.exports = {
   registerStrategy,
   listStrategies,
-  getStrategy,
-  requireStrategy,
+  getStrategy
 };
