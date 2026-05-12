@@ -30,6 +30,8 @@ const dbSettings = document.querySelector("[data-db-settings]");
 const dbTrades = document.querySelector("[data-db-trades]");
 const settingsForm = document.querySelector("[data-settings-form]");
 const settingsStatus = document.querySelector("[data-settings-status]");
+const startBotButtons = document.querySelectorAll("[data-start-bot], [data-start-bot-live]");
+const stopBotButtons = document.querySelectorAll("[data-stop-bot], [data-stop-bot-live]");
 const runBotButton = document.querySelector("[data-run-bot]");
 const scanBotButton = document.querySelector("[data-scan-bot]");
 const botStatus = document.querySelector("[data-bot-status]");
@@ -719,33 +721,54 @@ async function loadSupabaseCheck() {
   }
 }
 
-on(settingsForm, "submit", async (event) => {
-  event.preventDefault();
-  settingsStatus.textContent = "Saving...";
+function getBotSettingsPayload(botEnabledOverride = null) {
   const formData = new FormData(settingsForm);
-  const payload = {
-    riskPerTrade: formData.get("riskPerTrade"),
+  const riskPerTrade = Number(formData.get("riskPerTrade") || 1);
+  const botEnabled = botEnabledOverride === null ? formData.has("botEnabled") : Boolean(botEnabledOverride);
+
+  if (botEnabled && riskPerTrade > 1) {
+    throw new Error("Live trading risk is capped at 1%. Set Risk per trade to 1 or lower, then start the bot.");
+  }
+
+  return {
+    riskPerTrade,
     dailyStop: formData.get("dailyStop"),
     newsFilter: formData.has("newsFilter"),
-    botEnabled: formData.has("botEnabled"),
+    botEnabled,
   };
+}
 
+async function saveBotSettings(botEnabledOverride = null, statusText = "Saving...") {
+  settingsStatus.textContent = statusText;
+  const payload = getBotSettingsPayload(botEnabledOverride);
+
+  const response = await fetch("/api/bot/settings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  const data = await readJsonResponse(response);
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || "Save failed.");
+  }
+
+  const botEnabledInput = settingsForm.querySelector("[name='botEnabled']");
+  if (botEnabledInput) {
+    botEnabledInput.checked = Boolean(payload.botEnabled);
+  }
+
+  settingsStatus.textContent = payload.botEnabled ? "Bot started and saved." : "Bot stopped and saved.";
+  await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus()]);
+  return data;
+}
+
+on(settingsForm, "submit", async (event) => {
+  event.preventDefault();
   try {
-    const response = await fetch("/api/bot/settings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(payload),
-    });
-    const data = await readJsonResponse(response);
-
-    if (!response.ok || !data.ok) {
-      throw new Error(data.error || "Save failed.");
-    }
-
-    settingsStatus.textContent = "Saved to Supabase.";
-    await loadSupabaseCheck();
+    await saveBotSettings(null, "Saving...");
   } catch (error) {
     settingsStatus.textContent = error.message;
   }
@@ -753,11 +776,11 @@ on(settingsForm, "submit", async (event) => {
 
 async function runBotRequest(endpoint, statusText) {
   botStatus.textContent = statusText;
-  const formData = new FormData(settingsForm);
+    const formData = new FormData(settingsForm);
   const payload = {
     sessionId,
     market: "EUR/USD",
-    riskPerTrade: formData.get("riskPerTrade") || 1.5,
+    riskPerTrade: formData.get("riskPerTrade") || 1,
     dailyStop: formData.get("dailyStop") || 4,
     rewardRiskRatio: formData.get("rewardRiskRatio") || 2,
   };
@@ -811,10 +834,14 @@ async function loadLiveTradingStatus() {
     liveStatus.textContent = data.liveTradingEnabled
       ? data.botArmed
         ? `Armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
-        : "Backend enabled, but Bot enabled is off."
-      : "Locked by backend.";
+        : "Backend is live, but the bot is stopped. Click Start Bot."
+      : "Locked by backend. Set ENABLE_LIVE_TRADING=true on Railway to allow live orders.";
     if (botMode) {
       botMode.textContent = data.liveTradingEnabled && data.botArmed ? "Live Armed" : "Live Locked";
+    }
+    const botEnabledInput = settingsForm?.querySelector("[name='botEnabled']");
+    if (botEnabledInput) {
+      botEnabledInput.checked = Boolean(data.botArmed);
     }
     if (dailyLossLock) {
       dailyLossLock.value = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;
@@ -970,6 +997,38 @@ async function executeLiveTrade(event) {
 
 on(runBotButton, "click", async () => {
   await runBotRequest("/api/bot/run", "Running EUR/USD strategy analysis...");
+});
+
+startBotButtons.forEach((button) => {
+  on(button, "click", async () => {
+    try {
+      await saveBotSettings(true, "Starting bot...");
+      if (liveStatus) {
+        liveStatus.textContent = "Bot started. Live orders still require a valid BUY or SELL signal and confirmation phrase.";
+      }
+    } catch (error) {
+      settingsStatus.textContent = error.message;
+      if (liveStatus) {
+        liveStatus.textContent = error.message;
+      }
+    }
+  });
+});
+
+stopBotButtons.forEach((button) => {
+  on(button, "click", async () => {
+    try {
+      await saveBotSettings(false, "Stopping bot...");
+      if (liveStatus) {
+        liveStatus.textContent = "Bot stopped. No new live orders can be sent.";
+      }
+    } catch (error) {
+      settingsStatus.textContent = error.message;
+      if (liveStatus) {
+        liveStatus.textContent = error.message;
+      }
+    }
+  });
 });
 
 on(scanBotButton, "click", async () => {

@@ -76,7 +76,7 @@
         <form class="settings-form" data-settings-form>
           <label>
             Risk per trade
-            <input type="number" name="riskPerTrade" value="1.5" min="0.1" max="5" step="0.1">
+            <input type="number" name="riskPerTrade" value="1" min="0.1" max="1" step="0.1">
           </label>
           <label>
             Daily stop
@@ -94,6 +94,10 @@
             <span>Bot enabled</span>
             <input type="checkbox" name="botEnabled">
           </label>
+          <div class="bot-arm-actions">
+            <button class="button primary" type="button" data-start-bot>Start Bot</button>
+            <button class="button secondary dark" type="button" data-stop-bot>Stop Bot</button>
+          </div>
           <button class="button primary full" type="submit">Save Bot Settings</button>
         </form>
       </article>
@@ -146,7 +150,11 @@
       <div class="bot-runner">
         <div>
           <p class="bot-runner-title">FOREX.com market order with attached stop and limit</p>
-          <p>Live execution is blocked unless the backend enables it, the strategy returns BUY or SELL, and the confirmation phrase matches.</p>
+          <p>Live execution requires the always-on backend lock, Start Bot, a BUY or SELL signal, safe spread, and the confirmation phrase.</p>
+        </div>
+        <div class="bot-actions">
+          <button class="button primary" type="button" data-start-bot-live>Start Bot</button>
+          <button class="button secondary dark" type="button" data-stop-bot-live>Stop Bot</button>
         </div>
       </div>
       <form class="settings-form" data-live-trade-form>

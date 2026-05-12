@@ -2038,7 +2038,7 @@ async function handleLiveTradeExecute(req, res) {
     const profile = await getOrCreateDefaultProfile();
     const latestSettings = await getLatestBotSettings(profile.id);
     if (!latestSettings?.bot_enabled) {
-      throw new Error("Bot enabled is off. Turn on Bot enabled and save settings before live orders can be sent.");
+      throw new Error("Bot is stopped. Click Start Bot before live orders can be sent.");
     }
 
     const realizedLossToday = await getTodayRealizedLoss(profile.id);
