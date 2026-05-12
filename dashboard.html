@@ -26,7 +26,7 @@
     <section class="dashboard-hero">
       <div>
         <p class="eyebrow">Connected FOREX.com account</p>
-        <h1>Account dashboard</h1>
+        <h1>Command center</h1>
         <p data-dashboard-status>Loading account data...</p>
       </div>
       <div class="bot-state">
@@ -54,47 +54,34 @@
       </article>
     </section>
 
-    <section class="dashboard-card market-prices-card">
-      <div class="table-header">
-        <span>Live market prices</span>
-        <span data-live-prices-status>Loading live prices...</span>
-      </div>
-      <div class="bot-runner compact-runner">
-        <div>
-          <p class="bot-runner-title">Top-15 FOREX.com bid / offer snapshots</p>
-          <p>Live prices come from the FOREX.com PRICES stream for the markets the strategy scans.</p>
-        </div>
-        <button class="button secondary dark" type="button" data-refresh-prices>Refresh Prices</button>
-      </div>
-      <div class="data-table live-price-table">
-        <div class="table-header price-row">
-          <span>Market</span>
-          <span>Bid</span>
-          <span>Offer</span>
-          <span>Mid</span>
-          <span>Spread</span>
-        </div>
-        <div data-live-prices-list class="table-list"></div>
-      </div>
-    </section>
-
-    <section class="dashboard-grid">
-      <article class="dashboard-card">
+    <section class="operations-grid" aria-label="Trading workspace">
+      <article class="dashboard-card market-prices-card">
         <div class="table-header">
-          <span>Supabase storage</span>
-          <span data-supabase-db-status>Checking...</span>
+          <span>Live market prices</span>
+          <span data-live-prices-status>Loading live prices...</span>
         </div>
-        <div class="detail-list">
-          <div><span>Profile</span><strong data-db-profile>--</strong></div>
-          <div><span>Broker records</span><strong data-db-brokers>--</strong></div>
-          <div><span>Bot settings</span><strong data-db-settings>--</strong></div>
-          <div><span>Trade logs</span><strong data-db-trades>--</strong></div>
+        <div class="bot-runner compact-runner">
+          <div>
+            <p class="bot-runner-title">Top-15 FOREX.com bid / offer snapshots</p>
+            <p>Markets the strategy scans, shown in a compact trading-board view.</p>
+          </div>
+          <button class="button secondary dark" type="button" data-refresh-prices>Refresh Prices</button>
+        </div>
+        <div class="data-table live-price-table">
+          <div class="table-header price-row">
+            <span>Market</span>
+            <span>Bid</span>
+            <span>Offer</span>
+            <span>Mid</span>
+            <span>Spread</span>
+          </div>
+          <div data-live-prices-list class="table-list"></div>
         </div>
       </article>
 
-      <article class="dashboard-card">
+      <article class="dashboard-card bot-control-card">
         <div class="table-header">
-          <span>Bot settings</span>
+          <span>Bot controls</span>
           <span data-settings-status>Not saved this session.</span>
         </div>
         <form class="settings-form" data-settings-form>
@@ -129,7 +116,7 @@
 
     <nav class="dashboard-tabs" aria-label="Dashboard tools">
       <button class="dashboard-tab is-active" type="button" data-dashboard-tab="strategy">Strategy</button>
-      <button class="dashboard-tab" type="button" data-dashboard-tab="live">Live trade</button>
+      <button class="dashboard-tab" type="button" data-dashboard-tab="live">Trade</button>
       <button class="dashboard-tab" type="button" data-dashboard-tab="markets">Markets</button>
       <button class="dashboard-tab" type="button" data-dashboard-tab="account">Account</button>
     </nav>
@@ -258,6 +245,19 @@
     </section>
 
     <section class="dashboard-grid dashboard-tab-panel" data-dashboard-tab-panel="account">
+      <article class="dashboard-card">
+        <div class="table-header">
+          <span>Storage status</span>
+          <span data-supabase-db-status>Checking...</span>
+        </div>
+        <div class="detail-list">
+          <div><span>Profile</span><strong data-db-profile>--</strong></div>
+          <div><span>Broker records</span><strong data-db-brokers>--</strong></div>
+          <div><span>Bot settings</span><strong data-db-settings>--</strong></div>
+          <div><span>Trade logs</span><strong data-db-trades>--</strong></div>
+        </div>
+      </article>
+
       <article class="dashboard-card">
         <div class="table-header">
           <span>Account details</span>
