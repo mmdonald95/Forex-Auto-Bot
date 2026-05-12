@@ -2,6 +2,10 @@ const http = require("node:http");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { approveTrade, mergeRiskLimits } = require("./lib/risk-manager");
+const { evaluateValidationReport } = require("./lib/validation-gate");
+const { buildTradeJournalEntry } = require("./lib/trade-journal");
+const { registerStrategy, listStrategies } = require("./lib/strategy-registry");
 
 const root = __dirname;
 
@@ -38,6 +42,20 @@ const demoPositions = new Map();
 let supabaseAdminClient;
 const logDir = path.join(root, "logs");
 const forexDebugLog = path.join(logDir, "forex-debug.jsonl");
+
+registerStrategy({
+  id: "moving-average-profit-rule",
+  name: "Moving Average Profit Rule",
+  version: "1.0.0",
+  parameters: {
+    shortWindow: 8,
+    longWindow: 21,
+    minimumRewardRisk: 2,
+  },
+  generateSignal(context) {
+    return runMovingAverageStrategy(context);
+  },
+});
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -2038,6 +2056,47 @@ async function handleOpsStatus(req, res) {
   });
 }
 
+async function handleValidationStatus(req, res) {
+  try {
+    const profile = await getOrCreateDefaultProfile();
+    const validations = [];
+
+    for (const strategy of listStrategies()) {
+      try {
+        const row = await getLatestStrategyValidation(profile.id, strategy.id);
+        const report = normalizeValidationReport(row);
+        const evaluation = evaluateValidationReport(report);
+        validations.push({
+          strategy,
+          report,
+          approved: evaluation.approved,
+          failures: evaluation.failures,
+          requirements: evaluation.requirements,
+        });
+      } catch (error) {
+        validations.push({
+          strategy,
+          report: null,
+          approved: false,
+          failures: ["validation_record_missing"],
+          error: error.message,
+        });
+      }
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      profile,
+      validations,
+    });
+  } catch (error) {
+    sendJson(res, 500, {
+      ok: false,
+      error: error.message,
+    });
+  }
+}
+
 async function countTodayLiveTrades(profileId) {
   const supabase = await getSupabaseAdmin();
   const { count, error } = await supabase
@@ -2120,6 +2179,79 @@ async function getGoalContextForProfile(profileId) {
     dailyProfitToday,
     remainingDailyProfit: Number(Math.max(0, dailyProfitGoal - dailyProfitToday).toFixed(2)),
   };
+}
+
+function buildRiskLimitsFromSettings(settings = {}, overrides = {}) {
+  const dailyLossLimit = getDailyLossLimit(settings);
+  return mergeRiskLimits({
+    maxRiskPerTradePct: Math.min(parseBrokerNumber(settings?.risk_per_trade) || 1, 1),
+    maxDailyLossUsd: dailyLossLimit,
+    maxWeeklyLossUsd: dailyLossLimit * 2,
+    maxMonthlyLossUsd: dailyLossLimit * 4,
+    maxDrawdownPct: parseBrokerNumber(settings?.max_drawdown_pct) || 10,
+    maxOpenTrades,
+    maxOpenTradesPerPair: parseBrokerNumber(settings?.max_open_trades_per_pair) || 1,
+    maxLotSize: maxLiveTradeQuantity,
+    maxTotalExposure: maxLiveTradeQuantity * Math.max(maxOpenPositions, 1),
+    maxSpreadPips: maxLiveSpreadPips,
+    maxSlippagePips: parseBrokerNumber(settings?.max_slippage_pips) || 1,
+    maxConsecutiveLosses: parseBrokerNumber(settings?.max_consecutive_losses) || 3,
+    requireStopLoss: true,
+    ...overrides,
+  });
+}
+
+async function getLatestStrategyValidation(profileId, strategyId) {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("strategy_validations")
+    .select("*")
+    .eq("profile_id", profileId)
+    .eq("strategy_id", strategyId)
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Strategy validation gate unavailable: ${error.message}. Run supabase-validation-gate.sql in Supabase.`);
+  }
+
+  return data;
+}
+
+function normalizeValidationReport(row = null) {
+  if (!row) {
+    return {};
+  }
+
+  return {
+    strategyId: row.strategy_id,
+    strategyName: row.strategy_name,
+    backtestPassed: row.backtest_passed,
+    outOfSamplePassed: row.out_of_sample_passed,
+    walkForwardPassed: row.walk_forward_passed,
+    stressTestPassed: row.stress_test_passed,
+    paperTradingPassed: row.paper_trading_passed,
+    riskDisclosureAccepted: row.risk_disclosure_accepted,
+    expectancy: row.expectancy,
+    profitFactor: row.profit_factor,
+    maxDrawdownPct: row.max_drawdown_pct,
+    totalTrades: row.total_trades,
+    paperTradingDays: row.paper_trading_days,
+    report: row.report,
+    updatedAt: row.updated_at,
+  };
+}
+
+async function assertStrategyValidatedForLive(profileId, strategyId) {
+  const row = await getLatestStrategyValidation(profileId, strategyId);
+  const report = normalizeValidationReport(row);
+  const evaluation = evaluateValidationReport(report);
+  if (!evaluation.approved) {
+    throw new Error(`Live trading locked. Strategy validation failed: ${evaluation.failures.join(", ")}.`);
+  }
+
+  return { report, evaluation };
 }
 
 async function handleEmergencyStop(req, res) {
@@ -2229,6 +2361,7 @@ async function handleLiveTradeExecute(req, res) {
     const dailyStop = Number(body.dailyStop ?? 4);
     const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
     const requestMaxSpreadPips = Number(body.maxSpreadPips || maxLiveSpreadPips);
+    const strategyId = body.strategyId || "moving-average-profit-rule";
     if (riskPerTrade > 1) {
       throw new Error("Live risk per trade is capped at 1% for this prototype.");
     }
@@ -2238,6 +2371,7 @@ async function handleLiveTradeExecute(req, res) {
     if (!latestSettings?.bot_enabled) {
       throw new Error("Bot is stopped. Click Start Bot before live orders can be sent.");
     }
+    const validationGate = await assertStrategyValidatedForLive(profile.id, strategyId);
 
     const realizedLossToday = await getTodayRealizedLoss(profile.id);
     const dailyLossLimit = getDailyLossLimit(latestSettings);
@@ -2267,6 +2401,7 @@ async function handleLiveTradeExecute(req, res) {
 
     const positions = await getJson(`${apiBase}/order/openpositions?${buildQuery({ TradingAccountId: tradingAccount.tradingAccountId })}`, forexHeaders(session));
     const openPositions = normalizeList(positions, ["OpenPositions", "Positions", "ListOpenPositions"]);
+    const openPositionsForPair = openPositions.filter((position) => marketNameMatches(position, marketName));
     if (openPositions.length >= maxOpenPositions) {
       throw new Error(`Open position limit reached (${maxOpenPositions}). Close or review positions before placing another live trade.`);
     }
@@ -2305,6 +2440,59 @@ async function handleLiveTradeExecute(req, res) {
 
     if (!(decision.expectedProfit > decision.expectedRisk) || Number(decision.rewardRiskRatio) < 2) {
       throw new Error("No live order placed. Reward/risk rule did not pass.");
+    }
+
+    const cachedMargin = session?.account?.clientAccountId ? marginCache.get(session.account.clientAccountId) : null;
+    const balanceInfo = pickMarginBalance(cachedMargin);
+    const accountEquity = balanceInfo?.value || parseBrokerNumber(session.account?.accountValue) || parseBrokerNumber(session.account?.balance) || 0;
+    const riskApproval = approveTrade({
+      signal: {
+        strategyName: strategyId,
+        market: market.name,
+        direction: decision.direction,
+        entryPrice: decision.lastPrice,
+        stopLoss: decision.suggestedStop,
+        takeProfit: decision.suggestedTakeProfit,
+        riskPercentage: riskPerTrade,
+        rewardRiskRatio,
+        spreadPips,
+        slippagePips: 0,
+        pipValue: 1,
+      },
+      account: {
+        balance: accountEquity,
+        equity: accountEquity,
+      },
+      market: {
+        spreadPips,
+        minLotSize: 1,
+        maxLotSize: maxLiveTradeQuantity,
+      },
+      limits: buildRiskLimitsFromSettings(latestSettings, {
+        maxSpreadPips: spreadLimit,
+      }),
+      state: {
+        openTrades: openPositions.length,
+        openTradesForPair: openPositionsForPair.length,
+        dailyLoss: realizedLossToday,
+      },
+    });
+
+    if (!riskApproval.approved) {
+      const supabase = await getSupabaseAdmin();
+      await supabase.from("trade_logs").insert({
+        profile_id: profile.id,
+        broker_order_id: null,
+        market: market.name,
+        direction: decision.direction,
+        quantity: quantity,
+        entry_price: decision.lastPrice,
+        exit_price: null,
+        profit_loss: null,
+        status: "live_trade_rejected",
+        reason: `Risk Manager rejected trade: ${riskApproval.rejections.join(", ")}.`,
+      });
+      throw new Error(`Risk Manager rejected trade: ${riskApproval.rejections.join(", ")}.`);
     }
 
     const bidPrice = Number(livePrice?.bid || decision.lastPrice);
@@ -2361,6 +2549,25 @@ async function handleLiveTradeExecute(req, res) {
 
     const orderResponse = await postJson(`${apiBase}/order/newtradeorder`, orderRequest, forexHeaders(session));
     const brokerOrderId = firstPresent(orderResponse.OrderId, orderResponse.orderId, orderResponse.DealId, orderResponse.dealId, orderResponse.Reference);
+    const journalEntry = buildTradeJournalEntry({
+      tradeId: brokerOrderId,
+      brokerOrderId,
+      strategyName: strategyId,
+      market: market.name,
+      direction: decision.direction,
+      entryPrice: decision.lastPrice,
+      stopLoss: decision.suggestedStop,
+      takeProfit: decision.suggestedTakeProfit,
+      lotSize: quantity,
+      riskPercentage: riskPerTrade,
+      riskAmount: decision.expectedRisk,
+      spreadAtEntry: spreadPips,
+      slippage: 0,
+      balanceBefore: accountEquity,
+      equityBefore: accountEquity,
+      entryReason: decision.reason,
+      followedRules: true,
+    });
     const supabase = await getSupabaseAdmin();
     const { data: tradeLog, error } = await supabase
       .from("trade_logs")
@@ -2374,7 +2581,7 @@ async function handleLiveTradeExecute(req, res) {
         exit_price: null,
         profit_loss: null,
         status: "live_order_placed",
-        reason: `LIVE ORDER SENT. ${decision.reason} Stop ${decision.suggestedStop}, take profit ${decision.suggestedTakeProfit}.`,
+        reason: `LIVE ORDER SENT. ${decision.reason} Stop ${decision.suggestedStop}, take profit ${decision.suggestedTakeProfit}. Risk Manager approved. Validation approved.`,
       })
       .select("*")
       .single();
@@ -2393,6 +2600,9 @@ async function handleLiveTradeExecute(req, res) {
         AuditId: "hidden",
       },
       orderResponse,
+      validationGate,
+      riskApproval,
+      journalEntry,
       tradeLog,
     });
   } catch (error) {
@@ -2944,6 +3154,11 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && url.pathname === "/api/ops/status") {
     handleOpsStatus(req, res);
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/validation/status") {
+    handleValidationStatus(req, res);
     return;
   }
 

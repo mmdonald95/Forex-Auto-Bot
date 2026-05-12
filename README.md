@@ -1,6 +1,6 @@
 # Forex Auto Bot
 
-Forex Auto Bot is a Node.js web app for connecting to a FOREX.com account, viewing account data, displaying live prices/candlestick charts, saving bot settings to Supabase, and running demo-mode trading strategy simulations.
+Forex Auto Bot is a Node.js web app for connecting to a FOREX.com account, viewing account data, displaying live prices/candlestick charts, saving bot settings to Supabase, analyzing strategy signals, and executing controlled live trades when the backend is explicitly armed.
 
 ## Features
 
@@ -9,14 +9,14 @@ Forex Auto Bot is a Node.js web app for connecting to a FOREX.com account, viewi
 - Live price snapshots from FOREX.com
 - Candlestick chart UI using FOREX.com OHLC bar history
 - Supabase profile, bot settings, broker connection, and trade log storage
-- Demo-mode moving-average strategy engine
-- Top-15 forex pair scan in simulation mode
+- Moving-average strategy engine
+- Top-15 forex pair scan
 - Reward-to-risk rule before simulated signals are logged
 - Always-on engine worker for persistent FOREX.com streaming outside Vercel
 
 ## Important Safety Note
 
-This project is not financial advice and does not guarantee profit. Forex trading is risky and can lose money. Live order placement should stay disabled until the app has been tested in demo mode, reviewed for compliance/security, and given proper risk controls.
+This project is not financial advice and does not guarantee profit. Forex trading is risky and can lose money. Live order placement should stay disabled until the strategy, security, and risk controls have been validated.
 
 ## Local Setup
 
@@ -66,7 +66,7 @@ http://localhost:3000
 3. Enter FOREX.com username and password.
 4. Leave AppKey blank if it is saved in `.env`.
 5. After connection, the app redirects to the dashboard.
-6. Use the dashboard to view account value, prices, candles, bot settings, and demo bot decisions.
+6. Use the dashboard to view account value, prices, candles, bot settings, strategy decisions, and live execution controls.
 
 ## Supabase Tables
 
@@ -77,8 +77,23 @@ The app expects these tables:
 - `bot_settings`
 - `trade_logs`
 - `account_snapshots`
+- `strategy_validations`
 
 Run `supabase-account-snapshots.sql` in the Supabase SQL editor to add the account snapshot table used by the always-on engine.
+Run `supabase-validation-gate.sql` to add the strategy validation gate used before live trading.
+
+## Trading Safety Architecture
+
+Live trading is locked by default. The intended flow is:
+
+1. Market data updates.
+2. Strategy Engine generates a signal only.
+3. Validation Gate confirms backtest, out-of-sample, walk-forward, stress test, paper trading, and risk disclosure are complete.
+4. Risk Manager approves or rejects the trade.
+5. Order Manager sends the order only after approval.
+6. Broker confirmation and Trade Journal record the event.
+
+The Strategy Engine cannot bypass the Risk Manager. Trades without stop losses, excessive spread, excessive risk, validation failures, loss-limit breaches, or unstable data/broker conditions are rejected and logged.
 
 ## What Is Live vs Simulated
 
@@ -95,15 +110,15 @@ Stored in Supabase:
 - User/profile record
 - Broker connection metadata
 - Bot settings
-- Demo trade logs
+- Trade logs
 
-Simulation only:
+Analysis only unless live trading is explicitly armed:
 
 - Bot decisions
 - Top-15 scan decisions
 - Trade placement
 
-Live FOREX.com order placement is available only when the backend explicitly enables it with `ENABLE_LIVE_TRADING=true`. Keep it disabled until demo-mode testing is reliable.
+Live FOREX.com order placement is available only when the backend explicitly enables it with `ENABLE_LIVE_TRADING=true`. Keep it disabled until the strategy and risk controls are reliable.
 
 ## Always-On Trading Engine
 
@@ -121,7 +136,7 @@ Recommended production setup:
 2. Run `npm run engine` on an always-on host such as Railway, Render background worker, Fly.io, DigitalOcean, or a VPS.
 3. Add the same Supabase and FOREX.com environment variables to that host.
 4. Add `FOREXCOM_USERNAME` and `FOREXCOM_PASSWORD` only on the always-on engine host if you want the engine to log in by itself.
-5. Leave live order placement disabled until demo trading is tested.
+5. Leave live order placement disabled until strategy behavior and risk controls are validated.
 
 The engine writes the latest `CLIENTACCOUNTMARGIN` balance into Supabase `account_snapshots`. The Vercel dashboard can read that table when Vercel cannot maintain the live Lightstreamer connection itself.
 
@@ -167,8 +182,8 @@ These are already listed in `.gitignore`.
 - Verify live prices and candlestick charts across the top 15 pairs
 - Use real candle history for all strategy calculations
 - Add stronger risk controls and correlation limits
-- Add demo P/L tracking
-- Add live order placement only after demo-mode testing is reliable
+- Add live order reconciliation against FOREX.com fills
+- Add live order placement only after strategy behavior is reliable
 
 ## Vercel Deployment
 

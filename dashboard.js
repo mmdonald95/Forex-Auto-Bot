@@ -53,6 +53,8 @@ const decisionCandles = document.querySelector("[data-decision-candles]");
 const decisionSpread = document.querySelector("[data-decision-spread]");
 const decisionReason = document.querySelector("[data-decision-reason]");
 const liveStatus = document.querySelector("[data-live-status]");
+const validationStatus = document.querySelector("[data-validation-status]");
+const validationDetail = document.querySelector("[data-validation-detail]");
 const liveTradeForm = document.querySelector("[data-live-trade-form]");
 const liveTradeButton = document.querySelector("[data-live-trade-button]");
 const liveConfirm = document.querySelector("[data-live-confirm]");
@@ -785,8 +787,8 @@ async function saveBotSettings(botEnabledOverride = null, statusText = "Saving..
     botEnabledInput.checked = Boolean(payload.botEnabled);
   }
 
-  settingsStatus.textContent = payload.botEnabled ? "Bot started and saved." : "Bot stopped and saved.";
-  await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus()]);
+    settingsStatus.textContent = payload.botEnabled ? "Bot started and saved." : "Bot stopped and saved.";
+  await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
   return data;
 }
 
@@ -899,6 +901,35 @@ async function loadLiveTradingStatus() {
     if (liveTradeButton) {
       liveTradeButton.disabled = true;
     }
+  }
+}
+
+async function loadValidationStatus() {
+  if (!validationStatus) {
+    return;
+  }
+
+  try {
+    const response = await fetchWithTimeout("/api/validation/status", {}, 10000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to load validation status.");
+    }
+
+    const validation = data.validations?.[0];
+    if (!validation) {
+      validationStatus.textContent = "No strategies";
+      validationDetail.textContent = "No strategy is registered for validation.";
+      return;
+    }
+
+    validationStatus.textContent = validation.approved ? "Ready for live review" : "Live locked";
+    validationDetail.textContent = validation.approved
+      ? `${validation.strategy.name} passed validation requirements. Manual confirmation is still required before live orders.`
+      : `${validation.strategy.name} is not live-ready: ${(validation.failures || []).join(", ")}.`;
+  } catch (error) {
+    validationStatus.textContent = "Live locked";
+    validationDetail.textContent = error.message;
   }
 }
 
@@ -1110,6 +1141,14 @@ loadDemoPositions().catch((error) => {
 loadLiveTradingStatus().catch((error) => {
   if (liveStatus) {
     liveStatus.textContent = error.message;
+  }
+});
+loadValidationStatus().catch((error) => {
+  if (validationStatus) {
+    validationStatus.textContent = "Live locked";
+  }
+  if (validationDetail) {
+    validationDetail.textContent = error.message;
   }
 });
 loadLivePrices().catch((error) => {
