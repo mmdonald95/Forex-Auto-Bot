@@ -34,6 +34,7 @@ const maxDailyLossInput = document.querySelector("[data-max-daily-loss]");
 const dailyProfitGoalInput = document.querySelector("[data-daily-profit-goal]");
 const startBotButtons = document.querySelectorAll("[data-start-bot], [data-start-bot-live]");
 const stopBotButtons = document.querySelectorAll("[data-stop-bot], [data-stop-bot-live]");
+const liveTradingToggle = document.querySelector("[data-live-trading-toggle]");
 const runBotButton = document.querySelector("[data-run-bot]");
 const scanBotButton = document.querySelector("[data-scan-bot]");
 const botStatus = document.querySelector("[data-bot-status]");
@@ -792,12 +793,49 @@ async function saveBotSettings(botEnabledOverride = null, statusText = "Saving..
   return data;
 }
 
+async function setLiveTradingLock(unlocked) {
+  if (liveStatus) {
+    liveStatus.textContent = unlocked ? "Unlocking live mode..." : "Locking live mode...";
+  }
+
+  const response = await fetchWithTimeout("/api/live/lock", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ unlocked }),
+  }, 10000);
+  const data = await readJsonResponse(response);
+
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || "Unable to update live trading lock.");
+  }
+
+  await loadLiveTradingStatus();
+  return data;
+}
+
 on(settingsForm, "submit", async (event) => {
   event.preventDefault();
   try {
     await saveBotSettings(null, "Saving...");
   } catch (error) {
     settingsStatus.textContent = error.message;
+  }
+});
+
+on(liveTradingToggle, "change", async () => {
+  try {
+    await setLiveTradingLock(liveTradingToggle.checked);
+    settingsStatus.textContent = liveTradingToggle.checked
+      ? "Live mode unlocked in the app."
+      : "Live mode locked in the app.";
+  } catch (error) {
+    liveTradingToggle.checked = !liveTradingToggle.checked;
+    settingsStatus.textContent = error.message;
+    if (liveStatus) {
+      liveStatus.textContent = error.message;
+    }
   }
 });
 
@@ -860,15 +898,22 @@ async function loadLiveTradingStatus() {
 
     liveStatus.textContent = data.liveTradingEnabled
       ? data.botArmed
-        ? `Armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
-        : "Backend is live, but the bot is stopped. Click Start Bot."
-      : "Locked by backend. Set ENABLE_LIVE_TRADING=true on Railway to allow live orders.";
+        ? `Live mode is unlocked and bot is armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
+        : "Live mode is unlocked, but the bot is stopped. Click Start Bot when ready."
+      : "Live mode is locked in the app. Turn on Live trading unlocked to allow live review.";
     if (botMode) {
-      botMode.textContent = data.liveTradingEnabled && data.botArmed ? "Live Armed" : "Live Locked";
+      botMode.textContent = data.liveTradingEnabled
+        ? data.botArmed
+          ? "Live Armed"
+          : "Live Standby"
+        : "Live Locked";
     }
     const botEnabledInput = settingsForm?.querySelector("[name='botEnabled']");
     if (botEnabledInput) {
       botEnabledInput.checked = Boolean(data.botArmed);
+    }
+    if (liveTradingToggle) {
+      liveTradingToggle.checked = Boolean(data.liveTradingEnabled);
     }
     if (dailyLossLock) {
       dailyLossLock.value = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;
@@ -886,7 +931,7 @@ async function loadLiveTradingStatus() {
       dailyProfitGoalInput.value = data.limits.dailyProfitGoalUsd;
     }
     if (liveTradeButton) {
-      liveTradeButton.disabled = !(data.liveTradingEnabled && data.botArmed);
+      liveTradeButton.disabled = !(data.liveExecutionReady && data.botArmed);
     }
     if (liveConfirm) {
       liveConfirm.placeholder = data.confirmText;

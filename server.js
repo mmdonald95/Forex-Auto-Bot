@@ -67,6 +67,7 @@ const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
 const liveTradingConfirmText = process.env.LIVE_TRADING_CONFIRM_TEXT || "I UNDERSTAND LIVE TRADING CAN LOSE MONEY";
 const sessions = new Map();
 const demoPositions = [];
+let liveTradingUnlocked = enableLiveTrading;
 let localBotSettings = {
   riskPerTrade: 1,
   dailyStop: 4,
@@ -833,8 +834,9 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/live/status") {
     sendJson(res, 200, {
       ok: true,
-      liveTradingEnabled: enableLiveTrading,
-      botArmed: enableLiveTrading && localBotSettings.botEnabled,
+      liveTradingEnabled: liveTradingUnlocked,
+      liveExecutionReady: enableLiveTrading && liveTradingUnlocked,
+      botArmed: liveTradingUnlocked && localBotSettings.botEnabled,
       dailyLoss: 0,
       dailyProfit: 0,
       confirmText: liveTradingConfirmText,
@@ -847,6 +849,25 @@ async function handleApi(req, res) {
         backendMaxDailyLossUsd: Number(process.env.MAX_DAILY_LOSS_USD || 100),
         dailyProfitGoalUsd: Number(localBotSettings.dailyProfitGoalUsd || 0),
       },
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/live/lock") {
+    const body = await readBody(req);
+    liveTradingUnlocked = Boolean(body.unlocked);
+    if (!liveTradingUnlocked) {
+      localBotSettings.botEnabled = false;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      liveTradingEnabled: liveTradingUnlocked,
+      liveExecutionReady: enableLiveTrading && liveTradingUnlocked,
+      botArmed: liveTradingUnlocked && localBotSettings.botEnabled,
+      warning: enableLiveTrading
+        ? null
+        : "Live mode can be unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
     });
     return;
   }
@@ -873,7 +894,8 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/live/emergency-stop") {
     localBotSettings.botEnabled = false;
-    sendJson(res, 200, { ok: true, botArmed: false });
+    liveTradingUnlocked = false;
+    sendJson(res, 200, { ok: true, liveTradingEnabled: false, botArmed: false });
     return;
   }
 
@@ -890,9 +912,11 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/live/trade") {
     sendJson(res, 423, {
       ok: false,
-      error: enableLiveTrading
-        ? "Live execution is blocked until strategy validation and broker order verification are fully wired."
-        : "Live trading is locked by backend. Keep ENABLE_LIVE_TRADING=false until validation is complete.",
+      error: !liveTradingUnlocked
+        ? "Live trading is locked in the app. Turn on Live trading unlocked first."
+        : enableLiveTrading
+          ? "Live execution is blocked until strategy validation and broker order verification are fully wired."
+          : "Live mode is unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
     });
     return;
   }
