@@ -3,13 +3,21 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 
-const { approveTrade, mergeRiskLimits } = require("./risk-manager");
-const { evaluateValidationReport } = require("./validation-gate");
-const { buildTradeJournalEntry } = require("./trade-journal");
-const { registerStrategy, listStrategies } = require("./strategy-registry");
-
 const root = __dirname;
+loadEnv(path.join(root, ".env"));
+
+const { approveTrade, mergeRiskLimits } = require("./lib/risk-manager");
+const { evaluateValidationReport } = require("./lib/validation-gate");
+const { buildTradeJournalEntry } = require("./lib/trade-journal");
+const { registerStrategy, listStrategies } = require("./lib/strategy-registry");
+
 const port = Number(process.env.PORT || 3000);
+const apiBase = (process.env.FOREXCOM_API_BASE || "https://ciapi.cityindex.com/TradingAPI").replace(/\/$/, "");
+const appVersion = process.env.FOREXCOM_APP_VERSION || "1";
+const appComments = process.env.FOREXCOM_APP_COMMENTS || "Forex Auto Bot";
+const forexComAppKey = process.env.FOREXCOM_APP_KEY || "";
+const defaultProfileName = process.env.DEFAULT_PROFILE_NAME || "Marcello Gambino";
+const sessions = new Map();
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -32,8 +40,41 @@ registerStrategy({
     shortWindow: 8,
     longWindow: 21,
     minimumRewardRisk: 2
-  }
+  },
+  generateSignal: generateDemoSignal
 });
+
+function loadEnv(filePath) {
+  if (!fs.existsSync(filePath)) {
+    return;
+  }
+
+  const lines = fs.readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+
+    const equalsIndex = trimmed.indexOf("=");
+    if (equalsIndex === -1) {
+      continue;
+    }
+
+    const key = trimmed.slice(0, equalsIndex).trim();
+    const value = trimmed.slice(equalsIndex + 1).trim().replace(/^["']|["']$/g, "");
+    if (!process.env[key]) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function maskSecret(value) {
+  if (!value) {
+    return "";
+  }
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
 
 function sendJson(res, statusCode, body) {
   const payload = JSON.stringify(body, null, 2);
@@ -157,12 +198,147 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/forexcom/config") {
+    sendJson(res, 200, {
+      ok: true,
+      hasAppKey: Boolean(forexComAppKey),
+      appKey: forexComAppKey ? maskSecret(forexComAppKey) : "",
+      source: forexComAppKey ? "environment" : "browser-saved key required"
+    });
+    return;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/forexcom/connect") {
+    const body = await readBody(req);
+    const username = String(body.username || "").trim();
+    const password = String(body.password || "");
+    const appKey = String(body.appKey || forexComAppKey || "").trim();
+
+    if (!username || !password) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "Enter your FOREX.com username and password."
+      });
+      return;
+    }
+
+    if (!appKey) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "Missing FOREX.com AppKey. Paste it once; the browser will remember it for next time."
+      });
+      return;
+    }
+
+    const sessionPayload = {
+      UserName: username,
+      Password: password,
+      AppVersion: appVersion,
+      AppComments: appComments,
+      AppKey: appKey
+    };
+
+    let account = {
+      logonUserName: username,
+      clientAccountCurrency: "USD",
+      clientAccountId: null
+    };
+    let brokerSession = null;
+
+    try {
+      const response = await fetch(`${apiBase}/session`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "Forex Auto Bot"
+        },
+        body: JSON.stringify(sessionPayload)
+      });
+      const text = await response.text();
+      const data = text ? JSON.parse(text) : {};
+
+      if (!response.ok) {
+        throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com rejected login (${response.status}).`);
+      }
+
+      brokerSession = data;
+      account = {
+        ...account,
+        ...data,
+        logonUserName: data.UserName || data.userName || username,
+        clientAccountId: data.ClientAccountId || data.clientAccountId || data.AccountId || data.accountId || null,
+        clientAccountCurrency: data.ClientAccountCurrency || data.clientAccountCurrency || "USD"
+      };
+    } catch (error) {
+      sendJson(res, 502, {
+        ok: false,
+        error: error.message,
+        hint: "Confirm the FOREX.com username, password, AppKey, and API environment variables."
+      });
+      return;
+    }
+
+    const localSessionId = crypto.randomUUID();
+    sessions.set(localSessionId, {
+      username,
+      appKey,
+      account,
+      brokerSession,
+      createdAt: new Date().toISOString()
+    });
+
+    sendJson(res, 200, {
+      ok: true,
+      localSessionId,
+      account,
+      appKey: maskSecret(appKey)
+    });
+    return;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/forexcom/snapshot") {
+    const session = sessions.get(url.searchParams.get("sessionId"));
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first."
+      });
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      account: session.account,
+      accountValue: null,
+      positions: [],
+      tradeHistory: [],
+      primaryTradingAccount: null,
+      accountValueSource: "connected session fallback"
+    });
+    return;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/signal") {
     const body = await readBody(req);
     const signal = generateDemoSignal(body);
 
     const limits = mergeRiskLimits(body.riskLimits || {});
-    const approval = approveTrade(signal, limits);
+    const approval = approveTrade({
+      signal: {
+        strategyName: "moving-average-profit-rule",
+        market: signal.market,
+        direction: signal.direction,
+        entryPrice: signal.entry,
+        stopLoss: signal.stopLoss,
+        takeProfit: signal.takeProfit,
+        riskPercentage: body.riskPercent || 1,
+        rewardRiskRatio: signal.rewardRiskRatio,
+        spreadPips: 1
+      },
+      account: { equity: body.balance || 10000, balance: body.balance || 10000 },
+      market: { spreadPips: 1 },
+      limits
+    });
 
     sendJson(res, 200, {
       signal,
@@ -174,7 +350,13 @@ async function handleApi(req, res) {
   if (req.method === "POST" && url.pathname === "/api/risk/approve") {
     const body = await readBody(req);
     const limits = mergeRiskLimits(body.limits || {});
-    const approval = approveTrade(body.trade || {}, limits);
+    const approval = approveTrade({
+      signal: body.trade || body.signal || {},
+      account: body.account || {},
+      market: body.market || {},
+      limits,
+      state: body.state || {}
+    });
 
     sendJson(res, 200, approval);
     return;

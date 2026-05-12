@@ -13,8 +13,11 @@
           "script.js",
           "signin.js",
           "dashboard.js",
-          "assets/**",
-          "lib/**"
+          "risk-manager.js",
+          "validation-gate.js",
+          "trade-journal.js",
+          "strategy-registry.js",
+          "assets/**"
         ]
       }
     }
