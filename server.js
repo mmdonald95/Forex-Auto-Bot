@@ -656,7 +656,7 @@ function average(values) {
   return values.reduce((total, value) => total + value, 0) / values.length;
 }
 
-function buildStrategyFromPrices({ prices, market = "EUR/USD", riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2, priceSource = "simulated" }) {
+function buildStrategyFromPrices({ prices, market = "EUR/USD", riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2, priceSource = "simulated", goalContext = null }) {
   const shortWindow = 8;
   const longWindow = 21;
 
@@ -687,21 +687,29 @@ function buildStrategyFromPrices({ prices, market = "EUR/USD", riskPerTrade = 1.
   }
 
   const riskPassed = spreadPips <= maxSpreadPips && Number(riskPerTrade) <= 3 && Number(dailyStop) <= 8;
+  const remainingDailyProfit = parseBrokerNumber(goalContext?.remainingDailyProfit);
+  const hasDailyProfitGoal = remainingDailyProfit !== null;
+  const goalRiskPassed = !hasDailyProfitGoal || (remainingDailyProfit > 0 && expectedRisk <= remainingDailyProfit);
+  const goalMeaningfulPassed = !hasDailyProfitGoal || expectedProfit >= Math.max(1, remainingDailyProfit * 0.2);
   const profitRulePassed = expectedProfit > expectedRisk && Number(rewardRiskRatio) >= 2;
-  const status = direction === "HOLD" ? "simulated_hold" : riskPassed && profitRulePassed ? "simulated_signal" : "risk_blocked";
+  const allRulesPassed = riskPassed && profitRulePassed && goalRiskPassed && goalMeaningfulPassed;
+  const status = direction === "HOLD" ? "simulated_hold" : allRulesPassed ? "simulated_signal" : "risk_blocked";
   const stopDistance = 0.002;
   const takeProfitDistance = 0.004;
+  const goalMessage = hasDailyProfitGoal
+    ? ` Daily goal remaining ${remainingDailyProfit.toFixed(2)}; expected risk ${expectedRisk.toFixed(2)}, expected profit ${expectedProfit.toFixed(2)}.`
+    : "";
 
   return {
     market,
-    direction: riskPassed && profitRulePassed ? direction : "HOLD",
+    direction: allRulesPassed ? direction : "HOLD",
     rawDirection: direction,
     status,
     reason: direction === "HOLD"
       ? reason
-      : riskPassed && profitRulePassed
-        ? `${reason} Profit rule passed: expected reward ${rewardRiskRatio}:1 is greater than expected risk.`
-        : `Risk/profit check blocked signal. Spread ${spreadPips} pips, risk ${riskPerTrade}%, daily stop ${dailyStop}%, reward:risk ${rewardRiskRatio}:1.`,
+      : allRulesPassed
+        ? `${reason} Profit rule passed: expected reward ${rewardRiskRatio}:1 is greater than expected risk.${goalMessage}`
+        : `Risk/profit check blocked signal. Spread ${spreadPips} pips, risk ${riskPerTrade}%, daily stop ${dailyStop}%, reward:risk ${rewardRiskRatio}:1.${goalMessage}`,
     lastPrice,
     shortMa: Number(currentShort.toFixed(5)),
     longMa: Number(currentLong.toFixed(5)),
@@ -709,11 +717,39 @@ function buildStrategyFromPrices({ prices, market = "EUR/USD", riskPerTrade = 1.
     riskAmount,
     expectedRisk,
     expectedProfit,
+    remainingDailyProfit,
+    goalRiskPassed,
+    goalMeaningfulPassed,
     rewardRiskRatio,
     priceSource,
     suggestedStop: direction === "BUY" ? Number((lastPrice - stopDistance).toFixed(5)) : Number((lastPrice + stopDistance).toFixed(5)),
     suggestedTakeProfit: direction === "BUY" ? Number((lastPrice + takeProfitDistance).toFixed(5)) : Number((lastPrice - takeProfitDistance).toFixed(5)),
   };
+}
+
+function selectGoalAwareDecision(decisions, goalContext = null) {
+  const signals = decisions.filter((decision) => decision.status === "simulated_signal");
+  if (!signals.length) {
+    return { selected: decisions[0], signal: null };
+  }
+
+  const remaining = parseBrokerNumber(goalContext?.remainingDailyProfit);
+  if (remaining === null || remaining <= 0) {
+    return { selected: signals[0], signal: signals[0] };
+  }
+
+  const selected = signals
+    .slice()
+    .sort((left, right) => {
+      const leftFit = Math.abs((left.expectedProfit || 0) - remaining);
+      const rightFit = Math.abs((right.expectedProfit || 0) - remaining);
+      if (leftFit !== rightFit) {
+        return leftFit - rightFit;
+      }
+      return (left.expectedRisk || 0) - (right.expectedRisk || 0);
+    })[0];
+
+  return { selected, signal: selected };
 }
 
 const topForexMarkets = [
@@ -734,7 +770,7 @@ const topForexMarkets = [
   "AUD/CAD",
 ];
 
-function runMovingAverageStrategy({ market = "EUR/USD", riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2 }) {
+function runMovingAverageStrategy({ market = "EUR/USD", riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2, goalContext = null }) {
   const prices = seededPriceSeries(`${market}-${new Date().toISOString().slice(0, 13)}`);
   return buildStrategyFromPrices({
     prices,
@@ -743,6 +779,7 @@ function runMovingAverageStrategy({ market = "EUR/USD", riskPerTrade = 1.5, dail
     dailyStop,
     balance,
     rewardRiskRatio,
+    goalContext,
     priceSource: "simulated fallback",
   });
 }
@@ -976,13 +1013,14 @@ async function getPriceBars({ session, marketName = "EUR/USD", interval = "MINUT
   };
 }
 
-function runLivePriceDecision({ price, riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2 }) {
+function runLivePriceDecision({ price, riskPerTrade = 1.5, dailyStop = 4, balance = 0, rewardRiskRatio = 2, goalContext = null }) {
   const decision = runMovingAverageStrategy({
     market: price.market,
     riskPerTrade,
     dailyStop,
     balance,
     rewardRiskRatio,
+    goalContext,
   });
 
   if (price.mid) {
@@ -1074,7 +1112,7 @@ async function logDemoTrade({ profile, position, status, currentPrice, profitLos
   return data;
 }
 
-async function runCandleStrategy({ session, market, riskPerTrade, dailyStop, balance, rewardRiskRatio }) {
+async function runCandleStrategy({ session, market, riskPerTrade, dailyStop, balance, rewardRiskRatio, goalContext = null }) {
   const result = await getPriceBars({
     session,
     marketName: market,
@@ -1090,6 +1128,7 @@ async function runCandleStrategy({ session, market, riskPerTrade, dailyStop, bal
     dailyStop,
     balance,
     rewardRiskRatio,
+    goalContext,
     priceSource: "FOREX.com candle history",
   });
   decision.candleCount = result.bars.length;
@@ -2068,6 +2107,21 @@ async function getTodayRealizedProfit(profileId) {
   }, 0);
 }
 
+async function getGoalContextForProfile(profileId) {
+  const latestSettings = await getLatestBotSettings(profileId);
+  const dailyProfitGoal = getDailyProfitGoal(latestSettings);
+  if (dailyProfitGoal === null) {
+    return null;
+  }
+
+  const dailyProfitToday = await getTodayRealizedProfit(profileId);
+  return {
+    dailyProfitGoal,
+    dailyProfitToday,
+    remainingDailyProfit: Number(Math.max(0, dailyProfitGoal - dailyProfitToday).toFixed(2)),
+  };
+}
+
 async function handleEmergencyStop(req, res) {
   try {
     const supabase = await getSupabaseAdmin();
@@ -2192,11 +2246,18 @@ async function handleLiveTradeExecute(req, res) {
     }
 
     const dailyProfitGoal = getDailyProfitGoal(latestSettings);
+    let realizedProfitToday = 0;
+    let goalContext = null;
     if (dailyProfitGoal !== null) {
-      const realizedProfitToday = await getTodayRealizedProfit(profile.id);
+      realizedProfitToday = await getTodayRealizedProfit(profile.id);
       if (realizedProfitToday >= dailyProfitGoal) {
         throw new Error(`Daily profit goal reached. Realized profit ${realizedProfitToday.toFixed(2)} is at or above ${dailyProfitGoal.toFixed(2)}, so no new live trades will be opened today.`);
       }
+      goalContext = {
+        dailyProfitGoal,
+        dailyProfitToday: realizedProfitToday,
+        remainingDailyProfit: Number((dailyProfitGoal - realizedProfitToday).toFixed(2)),
+      };
     }
 
     const todaysLiveTrades = await countTodayLiveTrades(profile.id);
@@ -2219,6 +2280,7 @@ async function handleLiveTradeExecute(req, res) {
       dailyStop,
       rewardRiskRatio,
       balance: 0,
+      goalContext,
     });
 
     if (livePrice?.mid) {
@@ -2395,6 +2457,8 @@ async function handleBotRun(req, res) {
     const dailyStop = Number(body.dailyStop ?? 4);
     const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
     const market = body.market || "EUR/USD";
+    const profile = await getOrCreateDefaultProfile();
+    const goalContext = await getGoalContextForProfile(profile.id);
     let result;
     try {
       if (!session) {
@@ -2407,6 +2471,7 @@ async function handleBotRun(req, res) {
         dailyStop,
         rewardRiskRatio,
         balance: balanceInfo?.value || 0,
+        goalContext,
       });
     } catch (error) {
       writeDebug("bot-candle-fallback", { market, error: error.message });
@@ -2416,12 +2481,12 @@ async function handleBotRun(req, res) {
         dailyStop,
         rewardRiskRatio,
         balance: balanceInfo?.value || 0,
+        goalContext,
       });
       result.fallbackReason = error.message;
     }
 
     const supabase = await getSupabaseAdmin();
-    const profile = await getOrCreateDefaultProfile();
     const { data, error } = await supabase
       .from("trade_logs")
       .insert({
@@ -2448,6 +2513,7 @@ async function handleBotRun(req, res) {
       mode: "analysis",
       balanceSource: balanceInfo?.key || null,
       priceSource: result.priceSource,
+      goalContext,
       decision: result,
       tradeLog: data,
     });
@@ -2469,6 +2535,8 @@ async function handleBotScan(req, res) {
     const dailyStop = Number(body.dailyStop ?? 4);
     const rewardRiskRatio = Number(body.rewardRiskRatio ?? 2);
     const markets = Array.isArray(body.markets) && body.markets.length ? body.markets : topForexMarkets;
+    const profile = await getOrCreateDefaultProfile();
+    const goalContext = await getGoalContextForProfile(profile.id);
     let livePrices = [];
     const candleDecisions = [];
     if (session) {
@@ -2491,6 +2559,7 @@ async function handleBotScan(req, res) {
             dailyStop,
             rewardRiskRatio,
             balance: balanceInfo?.value || 0,
+            goalContext,
           }));
         } catch (error) {
           writeDebug("bot-candle-scan-fallback", { market, error: error.message });
@@ -2511,14 +2580,12 @@ async function handleBotScan(req, res) {
         candleDecision.liveSpread = livePrice.spread;
       }
       return candleDecision || (livePrice
-        ? runLivePriceDecision({ price: livePrice, riskPerTrade, dailyStop, rewardRiskRatio, balance: balanceInfo?.value || 0 })
-        : runMovingAverageStrategy({ market, riskPerTrade, dailyStop, rewardRiskRatio, balance: balanceInfo?.value || 0 }));
+        ? runLivePriceDecision({ price: livePrice, riskPerTrade, dailyStop, rewardRiskRatio, balance: balanceInfo?.value || 0, goalContext })
+        : runMovingAverageStrategy({ market, riskPerTrade, dailyStop, rewardRiskRatio, balance: balanceInfo?.value || 0, goalContext }));
     });
-    const signal = decisions.find((decision) => decision.status === "simulated_signal");
-    const selected = signal || decisions[0];
+    const { selected, signal } = selectGoalAwareDecision(decisions, goalContext);
 
     const supabase = await getSupabaseAdmin();
-    const profile = await getOrCreateDefaultProfile();
     const { data, error } = await supabase
       .from("trade_logs")
       .insert({
@@ -2546,6 +2613,7 @@ async function handleBotScan(req, res) {
       scannedMarkets: markets.length,
       balanceSource: balanceInfo?.key || null,
       priceSource: candleDecisions.length ? "FOREX.com candle history" : livePrices.length ? "FOREX.com PRICES stream" : "simulated fallback",
+      goalContext,
       livePrices,
       selected,
       decisions,
