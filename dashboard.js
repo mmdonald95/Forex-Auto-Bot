@@ -35,6 +35,7 @@ const dailyProfitGoalInput = document.querySelector("[data-daily-profit-goal]");
 const startBotButtons = document.querySelectorAll("[data-start-bot], [data-start-bot-live]");
 const stopBotButtons = document.querySelectorAll("[data-stop-bot], [data-stop-bot-live]");
 const liveTradingToggle = document.querySelector("[data-live-trading-toggle]");
+const autoExecutionAuthorization = document.querySelector("[data-auto-execution-authorization]");
 const runBotButton = document.querySelector("[data-run-bot]");
 const scanBotButton = document.querySelector("[data-scan-bot]");
 const botStatus = document.querySelector("[data-bot-status]");
@@ -285,7 +286,17 @@ function renderDemoPositions(data) {
 function drawCandles(bars) {
   candlesChart.innerHTML = "";
 
-  if (!bars.length) {
+  const normalizedBars = (bars || [])
+    .map((bar) => ({
+      time: firstValue(bar, ["time", "Time", "BarDate", "Date"], ""),
+      open: parseBrokerNumber(firstValue(bar, ["open", "Open", "OpenPrice"], null)),
+      high: parseBrokerNumber(firstValue(bar, ["high", "High", "HighPrice"], null)),
+      low: parseBrokerNumber(firstValue(bar, ["low", "Low", "LowPrice"], null)),
+      close: parseBrokerNumber(firstValue(bar, ["close", "Close", "ClosePrice"], null)),
+    }))
+    .filter((bar) => [bar.open, bar.high, bar.low, bar.close].every((value) => value !== null));
+
+  if (!normalizedBars.length) {
     const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
     text.setAttribute("x", "500");
     text.setAttribute("y", "210");
@@ -301,12 +312,12 @@ function drawCandles(bars) {
   const padding = { top: 24, right: 70, bottom: 34, left: 54 };
   const plotWidth = width - padding.left - padding.right;
   const plotHeight = height - padding.top - padding.bottom;
-  const highs = bars.map((bar) => bar.high);
-  const lows = bars.map((bar) => bar.low);
+  const highs = normalizedBars.map((bar) => bar.high);
+  const lows = normalizedBars.map((bar) => bar.low);
   const max = Math.max(...highs);
   const min = Math.min(...lows);
   const scaleY = (value) => padding.top + ((max - value) / (max - min || 1)) * plotHeight;
-  const step = plotWidth / bars.length;
+  const step = plotWidth / normalizedBars.length;
   const bodyWidth = Math.max(4, Math.min(14, step * 0.62));
 
   for (let i = 0; i < 5; i += 1) {
@@ -327,7 +338,7 @@ function drawCandles(bars) {
     candlesChart.appendChild(label);
   }
 
-  bars.forEach((bar, index) => {
+  normalizedBars.forEach((bar, index) => {
     const x = padding.left + index * step + step / 2;
     const open = scaleY(bar.open);
     const close = scaleY(bar.close);
@@ -751,9 +762,15 @@ function getBotSettingsPayload(botEnabledOverride = null) {
   const formData = new FormData(settingsForm);
   const riskPerTrade = Number(formData.get("riskPerTrade") || 1);
   const botEnabled = botEnabledOverride === null ? formData.has("botEnabled") : Boolean(botEnabledOverride);
+  const liveModeUnlocked = Boolean(liveTradingToggle?.checked);
+  const autoExecutionAuthorized = formData.has("autoExecutionAuthorized");
 
   if (botEnabled && riskPerTrade > 1) {
     throw new Error("Live trading risk is capped at 1%. Set Risk per trade to 1 or lower, then start the bot.");
+  }
+
+  if (botEnabled && liveModeUnlocked && !autoExecutionAuthorized) {
+    throw new Error("Check the automatic live-trade authorization before starting the bot in live mode.");
   }
 
   return {
@@ -763,6 +780,7 @@ function getBotSettingsPayload(botEnabledOverride = null) {
     dailyProfitGoalUsd: formData.get("dailyProfitGoalUsd"),
     newsFilter: formData.has("newsFilter"),
     botEnabled,
+    autoExecutionAuthorized,
   };
 }
 
@@ -788,7 +806,11 @@ async function saveBotSettings(botEnabledOverride = null, statusText = "Saving..
     botEnabledInput.checked = Boolean(payload.botEnabled);
   }
 
-    settingsStatus.textContent = payload.botEnabled ? "Bot started and saved." : "Bot stopped and saved.";
+  settingsStatus.textContent = payload.botEnabled
+    ? payload.autoExecutionAuthorized
+      ? "Bot started. Automatic live trades are authorized within these risk limits."
+      : "Bot started. It can analyze, but automatic live execution is not authorized."
+    : "Bot stopped and saved.";
   await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
   return data;
 }
@@ -914,6 +936,9 @@ async function loadLiveTradingStatus() {
     }
     if (liveTradingToggle) {
       liveTradingToggle.checked = Boolean(data.liveTradingEnabled);
+    }
+    if (autoExecutionAuthorization) {
+      autoExecutionAuthorization.checked = Boolean(data.autoExecutionAuthorized);
     }
     if (dailyLossLock) {
       dailyLossLock.value = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;

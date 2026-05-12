@@ -74,7 +74,8 @@ let localBotSettings = {
   maxDailyLossUsd: 100,
   dailyProfitGoalUsd: 50,
   newsFilter: true,
-  botEnabled: false
+  botEnabled: false,
+  autoExecutionAuthorized: false
 };
 
 const mimeTypes = {
@@ -797,6 +798,16 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/bot/settings") {
     const body = await readBody(req);
+    const nextBotEnabled = Boolean(body.botEnabled);
+    const nextAutoExecutionAuthorized = Boolean(body.autoExecutionAuthorized);
+    if (liveTradingUnlocked && nextBotEnabled && !nextAutoExecutionAuthorized) {
+      sendJson(res, 400, {
+        ok: false,
+        error: "Automatic live-trade authorization is required before starting the bot in live mode.",
+      });
+      return;
+    }
+
     localBotSettings = {
       ...localBotSettings,
       riskPerTrade: Number(body.riskPerTrade ?? localBotSettings.riskPerTrade),
@@ -804,7 +815,8 @@ async function handleApi(req, res) {
       maxDailyLossUsd: Number(body.maxDailyLossUsd ?? localBotSettings.maxDailyLossUsd),
       dailyProfitGoalUsd: Number(body.dailyProfitGoalUsd ?? localBotSettings.dailyProfitGoalUsd),
       newsFilter: body.newsFilter !== false,
-      botEnabled: Boolean(body.botEnabled),
+      botEnabled: nextBotEnabled,
+      autoExecutionAuthorized: nextAutoExecutionAuthorized,
     };
 
     try {
@@ -820,6 +832,7 @@ async function handleApi(req, res) {
           daily_profit_goal_usd: localBotSettings.dailyProfitGoalUsd,
           news_filter: localBotSettings.newsFilter,
           bot_enabled: localBotSettings.botEnabled,
+          auto_execution_authorized: localBotSettings.autoExecutionAuthorized,
           updated_at: new Date().toISOString(),
         }]),
       });
@@ -835,8 +848,9 @@ async function handleApi(req, res) {
     sendJson(res, 200, {
       ok: true,
       liveTradingEnabled: liveTradingUnlocked,
-      liveExecutionReady: enableLiveTrading && liveTradingUnlocked,
-      botArmed: liveTradingUnlocked && localBotSettings.botEnabled,
+      autoExecutionAuthorized: localBotSettings.autoExecutionAuthorized,
+      liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized,
+      botArmed: liveTradingUnlocked && localBotSettings.botEnabled && localBotSettings.autoExecutionAuthorized,
       dailyLoss: 0,
       dailyProfit: 0,
       confirmText: liveTradingConfirmText,
@@ -858,13 +872,15 @@ async function handleApi(req, res) {
     liveTradingUnlocked = Boolean(body.unlocked);
     if (!liveTradingUnlocked) {
       localBotSettings.botEnabled = false;
+      localBotSettings.autoExecutionAuthorized = false;
     }
 
     sendJson(res, 200, {
       ok: true,
       liveTradingEnabled: liveTradingUnlocked,
-      liveExecutionReady: enableLiveTrading && liveTradingUnlocked,
-      botArmed: liveTradingUnlocked && localBotSettings.botEnabled,
+      autoExecutionAuthorized: localBotSettings.autoExecutionAuthorized,
+      liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized,
+      botArmed: liveTradingUnlocked && localBotSettings.botEnabled && localBotSettings.autoExecutionAuthorized,
       warning: enableLiveTrading
         ? null
         : "Live mode can be unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
@@ -894,6 +910,7 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/live/emergency-stop") {
     localBotSettings.botEnabled = false;
+    localBotSettings.autoExecutionAuthorized = false;
     liveTradingUnlocked = false;
     sendJson(res, 200, { ok: true, liveTradingEnabled: false, botArmed: false });
     return;
@@ -914,9 +931,11 @@ async function handleApi(req, res) {
       ok: false,
       error: !liveTradingUnlocked
         ? "Live trading is locked in the app. Turn on Live trading unlocked first."
-        : enableLiveTrading
-          ? "Live execution is blocked until strategy validation and broker order verification are fully wired."
-          : "Live mode is unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
+        : !localBotSettings.autoExecutionAuthorized
+          ? "Automatic live execution has not been authorized. Check the authorization box when starting the bot."
+          : enableLiveTrading
+            ? "Live execution is blocked until strategy validation and broker order verification are fully wired."
+            : "Live mode is unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
     });
     return;
   }
@@ -958,6 +977,10 @@ async function handleApi(req, res) {
       const low = Math.min(open, close) - 0.0008;
       return {
         BarDate: new Date(Date.now() - (maxResults - index) * 15 * 60 * 1000).toISOString(),
+        open: Number(open.toFixed(5)),
+        high: Number(high.toFixed(5)),
+        low: Number(low.toFixed(5)),
+        close: Number(close.toFixed(5)),
         Open: Number(open.toFixed(5)),
         High: Number(high.toFixed(5)),
         Low: Number(low.toFixed(5)),
