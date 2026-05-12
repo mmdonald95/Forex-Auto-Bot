@@ -803,6 +803,79 @@ function normalisePriceUpdate(update, market) {
   return output;
 }
 
+function normalisePriceFromMarketRaw(market) {
+  const raw = market.raw || {};
+  const bid = parseBrokerNumber(firstPresent(raw.Bid, raw.bid, raw.BidPrice, raw.bidPrice));
+  const offer = parseBrokerNumber(firstPresent(raw.Offer, raw.offer, raw.OfferPrice, raw.offerPrice, raw.Ask, raw.ask));
+  const price = parseBrokerNumber(firstPresent(raw.Price, raw.price, raw.Mid, raw.mid, raw.LastPrice, raw.lastPrice));
+  const mid = bid !== null && offer !== null
+    ? Number(((bid + offer) / 2).toFixed(5))
+    : price;
+
+  if (bid === null && offer === null && mid === null) {
+    return null;
+  }
+
+  return {
+    market: market.name,
+    marketId: market.marketId,
+    receivedAt: new Date().toISOString(),
+    bid,
+    offer,
+    mid,
+    spread: bid !== null && offer !== null ? Number((offer - bid).toFixed(5)) : null,
+    source: "FOREX.com market lookup",
+  };
+}
+
+async function getFallbackPrices({ session, markets }) {
+  const results = [];
+
+  for (const market of markets) {
+    const cached = priceCache.get(market.name);
+    if (cached) {
+      results.push({ ...cached, source: cached.source || "cached FOREX.com PRICES stream" });
+      continue;
+    }
+
+    const fromRaw = normalisePriceFromMarketRaw(market);
+    if (fromRaw) {
+      results.push(fromRaw);
+      continue;
+    }
+
+    try {
+      const history = await getPriceBars({
+        session,
+        marketName: market.name,
+        interval: "MINUTE",
+        span: 1,
+        maxResults: 2,
+      });
+      const latest = history.bars.at(-1);
+      if (latest) {
+        results.push({
+          market: market.name,
+          marketId: market.marketId,
+          receivedAt: new Date().toISOString(),
+          bid: null,
+          offer: null,
+          mid: latest.close,
+          spread: null,
+          source: "FOREX.com latest candle close",
+        });
+      }
+    } catch (error) {
+      writeDebug("forex-price-fallback-error", {
+        market: market.name,
+        error: error.message,
+      });
+    }
+  }
+
+  return results;
+}
+
 function subscribePricesOnce({ session, markets }) {
   return new Promise((resolve, reject) => {
     const ls = require("lightstreamer-client");
@@ -1570,10 +1643,28 @@ async function handleForexPrices(req, res, url) {
       markets: resolvedMarkets.map((market) => ({ name: market.name, marketId: market.marketId })),
     });
 
-    const prices = await subscribePricesOnce({ session, markets: resolvedMarkets });
+    let prices = [];
+    let source = "FOREX.com PRICES stream";
+    let warning = null;
+    try {
+      prices = await subscribePricesOnce({ session, markets: resolvedMarkets });
+    } catch (error) {
+      warning = `FOREX.com streaming prices unavailable in this runtime: ${error.message}`;
+      writeDebug("forex-live-price-stream-fallback", { error: error.message });
+      prices = await getFallbackPrices({ session, markets: resolvedMarkets });
+      source = prices.some((price) => price.source === "FOREX.com latest candle close")
+        ? "FOREX.com price fallback"
+        : "FOREX.com market lookup";
+    }
+
+    if (!prices.length) {
+      throw new Error(warning || "No FOREX.com prices were returned.");
+    }
+
     sendJson(res, 200, {
       ok: true,
-      source: "FOREX.com PRICES stream",
+      source,
+      warning,
       prices,
     });
   } catch (error) {

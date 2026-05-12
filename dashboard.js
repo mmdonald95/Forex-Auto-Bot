@@ -226,7 +226,13 @@ function setPriceRows(prices) {
   for (const price of prices) {
     const row = document.createElement("div");
     row.className = "data-row price-row";
-    for (const value of [price.market, price.bid, price.offer, price.mid, price.spread]) {
+    for (const value of [
+      price.market,
+      price.bid === null || price.bid === undefined ? "--" : Number(price.bid).toFixed(5),
+      price.offer === null || price.offer === undefined ? "--" : Number(price.offer).toFixed(5),
+      price.mid === null || price.mid === undefined ? "--" : Number(price.mid).toFixed(5),
+      price.spread === null || price.spread === undefined ? "--" : Number(price.spread).toFixed(5),
+    ]) {
       const cell = document.createElement("span");
       cell.textContent = value ?? "--";
       row.appendChild(cell);
@@ -593,7 +599,9 @@ async function loadLivePrices() {
     }
 
     if (livePricesStatus) {
-      livePricesStatus.textContent = `${data.prices.length} live price(s) from FOREX.com`;
+      livePricesStatus.textContent = data.warning
+        ? `${data.prices.length} price(s) from ${data.source}. Streaming fallback active.`
+        : `${data.prices.length} live price(s) from ${data.source || "FOREX.com"}`;
     }
     setPriceRows(data.prices);
   } catch (error) {
