@@ -13,7 +13,8 @@
           "script.js",
           "signin.js",
           "dashboard.js",
-          "assets/**"
+          "assets/**",
+          "lib/**"
         ]
       }
     }
