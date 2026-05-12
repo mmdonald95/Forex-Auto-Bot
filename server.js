@@ -76,6 +76,33 @@ function maskSecret(value) {
   return `${value.slice(0, 4)}...${value.slice(-4)}`;
 }
 
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = {};
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = { raw: text.replace(/\s+/g, " ").trim().slice(0, 300) };
+    }
+    return { response, data };
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error("FOREX.com login timed out. Try again, and confirm the API base URL is correct.");
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 function sendJson(res, statusCode, body) {
   const payload = JSON.stringify(body, null, 2);
   res.writeHead(statusCode, {
@@ -246,19 +273,17 @@ async function handleApi(req, res) {
     let brokerSession = null;
 
     try {
-      const response = await fetch(`${apiBase}/session`, {
+      const { response, data } = await fetchJsonWithTimeout(`${apiBase}/session`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "User-Agent": "Forex Auto Bot"
         },
         body: JSON.stringify(sessionPayload)
-      });
-      const text = await response.text();
-      const data = text ? JSON.parse(text) : {};
+      }, 12000);
 
       if (!response.ok) {
-        throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com rejected login (${response.status}).`);
+        throw new Error(data.Message || data.ErrorMessage || data.error || data.raw || `FOREX.com rejected login (${response.status}).`);
       }
 
       brokerSession = data;
@@ -270,10 +295,10 @@ async function handleApi(req, res) {
         clientAccountCurrency: data.ClientAccountCurrency || data.clientAccountCurrency || "USD"
       };
     } catch (error) {
-      sendJson(res, 502, {
+      sendJson(res, 200, {
         ok: false,
         error: error.message,
-        hint: "Confirm the FOREX.com username, password, AppKey, and API environment variables."
+        hint: "Confirm the FOREX.com username, password, AppKey, and API environment variables. The server stayed online and did not place any trade."
       });
       return;
     }

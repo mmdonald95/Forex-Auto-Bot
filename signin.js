@@ -4,9 +4,9 @@ const savedAppKey = localStorage.getItem("forexAppKey") || "";
 const appKeyInput = brokerForm?.querySelector("[name='appKey']");
 
 if (savedAppKey && appKeyInput) {
-  appKeyInput.placeholder = "Using browser-saved AppKey when blank";
+  appKeyInput.placeholder = `Saved in this browser (${savedAppKey.slice(0, 4)}...${savedAppKey.slice(-4)})`;
   brokerOutput.dataset.state = "success";
-  brokerOutput.textContent = "Browser-saved FOREX.com AppKey will be used when blank.";
+  brokerOutput.textContent = `Browser-saved FOREX.com AppKey loaded (${savedAppKey.slice(0, 4)}...${savedAppKey.slice(-4)}). Leave AppKey blank.`;
 }
 
 async function readJsonResponse(response) {
@@ -49,10 +49,13 @@ brokerForm.addEventListener("submit", async (event) => {
 
   const formData = new FormData(brokerForm);
   const payload = Object.fromEntries(formData.entries());
-  payload.appKey = String(payload.appKey || savedAppKey || "").trim();
+  const typedAppKey = String(payload.appKey || "").trim();
+  const currentSavedAppKey = localStorage.getItem("forexAppKey") || "";
+  payload.appKey = typedAppKey || currentSavedAppKey || savedAppKey || "";
 
-  if (payload.appKey) {
-    localStorage.setItem("forexAppKey", payload.appKey);
+  if (typedAppKey) {
+    localStorage.setItem("forexAppKey", typedAppKey);
+    payload.appKey = typedAppKey;
   }
 
   try {
@@ -69,6 +72,9 @@ brokerForm.addEventListener("submit", async (event) => {
       throw new Error(data.error || "Connection failed.");
     }
 
+    if (payload.appKey) {
+      localStorage.setItem("forexAppKey", payload.appKey);
+    }
     localStorage.setItem("forexSessionId", data.localSessionId);
     window.location.href = "/dashboard.html";
   } catch (error) {
