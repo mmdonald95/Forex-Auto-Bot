@@ -209,6 +209,10 @@ function setRows(container, items, columns, emptyText) {
 }
 
 function setPriceRows(prices) {
+  if (!livePricesList) {
+    return;
+  }
+
   livePricesList.innerHTML = "";
 
   if (!prices.length) {
@@ -571,11 +575,15 @@ async function searchMarkets(query) {
 
 async function loadLivePrices() {
   if (!sessionId) {
-    livePricesStatus.textContent = "Connect to FOREX.com first.";
+    if (livePricesStatus) {
+      livePricesStatus.textContent = "Connect to FOREX.com first.";
+    }
     return;
   }
 
-  livePricesStatus.textContent = "Loading from FOREX.com...";
+  if (livePricesStatus) {
+    livePricesStatus.textContent = "Loading from FOREX.com...";
+  }
   try {
     const response = await fetch(`/api/forexcom/prices?sessionId=${encodeURIComponent(sessionId)}`);
     const data = await readJsonResponse(response);
@@ -584,10 +592,14 @@ async function loadLivePrices() {
       throw new Error(data.error || "Live price load failed.");
     }
 
-    livePricesStatus.textContent = `${data.prices.length} live price(s) from FOREX.com`;
+    if (livePricesStatus) {
+      livePricesStatus.textContent = `${data.prices.length} live price(s) from FOREX.com`;
+    }
     setPriceRows(data.prices);
   } catch (error) {
-    livePricesStatus.textContent = error.message;
+    if (livePricesStatus) {
+      livePricesStatus.textContent = error.message;
+    }
   }
 }
 
@@ -1073,5 +1085,10 @@ loadDemoPositions().catch((error) => {
 loadLiveTradingStatus().catch((error) => {
   if (liveStatus) {
     liveStatus.textContent = error.message;
+  }
+});
+loadLivePrices().catch((error) => {
+  if (livePricesStatus) {
+    livePricesStatus.textContent = error.message;
   }
 });

@@ -54,6 +54,30 @@
       </article>
     </section>
 
+    <section class="dashboard-card market-prices-card">
+      <div class="table-header">
+        <span>Live market prices</span>
+        <span data-live-prices-status>Loading live prices...</span>
+      </div>
+      <div class="bot-runner compact-runner">
+        <div>
+          <p class="bot-runner-title">Top-15 FOREX.com bid / offer snapshots</p>
+          <p>Live prices come from the FOREX.com PRICES stream for the markets the strategy scans.</p>
+        </div>
+        <button class="button secondary dark" type="button" data-refresh-prices>Refresh Prices</button>
+      </div>
+      <div class="data-table live-price-table">
+        <div class="table-header price-row">
+          <span>Market</span>
+          <span>Bid</span>
+          <span>Offer</span>
+          <span>Mid</span>
+          <span>Spread</span>
+        </div>
+        <div data-live-prices-list class="table-list"></div>
+      </div>
+    </section>
+
     <section class="dashboard-grid">
       <article class="dashboard-card">
         <div class="table-header">
@@ -199,30 +223,6 @@
         <p data-live-order-reason>--</p>
       </div>
       <div class="table-list live-reconcile-list" data-live-reconcile-list></div>
-    </section>
-
-    <section class="dashboard-card dashboard-tab-panel" data-dashboard-tab-panel="markets">
-      <div class="table-header">
-        <span>Live FOREX.com prices</span>
-        <span data-live-prices-status>Not loaded.</span>
-      </div>
-      <div class="bot-runner">
-        <div>
-          <p class="bot-runner-title">Top-15 bid/offer snapshots</p>
-          <p>Pulls live price snapshots from the FOREX.com PRICES stream using resolved market IDs.</p>
-        </div>
-        <button class="button secondary dark" type="button" data-refresh-prices>Refresh Live Prices</button>
-      </div>
-      <div class="data-table live-price-table">
-        <div class="table-header price-row">
-          <span>Market</span>
-          <span>Bid</span>
-          <span>Offer</span>
-          <span>Mid</span>
-          <span>Spread</span>
-        </div>
-        <div data-live-prices-list class="table-list"></div>
-      </div>
     </section>
 
     <section class="dashboard-card chart-card dashboard-tab-panel" data-dashboard-tab-panel="markets">

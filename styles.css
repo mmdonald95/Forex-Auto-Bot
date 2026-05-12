@@ -684,6 +684,19 @@ input[type="checkbox"] {
   margin: 0 18px 18px;
 }
 
+.market-prices-card .live-price-table {
+  margin: 0 14px 14px;
+}
+
+.market-prices-card .table-list {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.compact-runner {
+  padding: 14px;
+}
+
 .chart-card {
   background: #0d1517;
   color: var(--white);
