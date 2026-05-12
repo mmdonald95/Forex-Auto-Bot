@@ -64,7 +64,6 @@ const supabaseRestUrl = (process.env.SUPABASE_REST_URL || (supabaseUrl ? `${supa
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PRIVATE_KEY || "";
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
 const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
-const liveTradingConfirmText = process.env.LIVE_TRADING_CONFIRM_TEXT || "I UNDERSTAND LIVE TRADING CAN LOSE MONEY";
 const sessions = new Map();
 const demoPositions = [];
 const activityEvents = [];
@@ -910,7 +909,6 @@ async function handleApi(req, res) {
       botArmed: liveTradingUnlocked && localBotSettings.botEnabled && localBotSettings.autoExecutionAuthorized,
       dailyLoss: 0,
       dailyProfit: 0,
-      confirmText: liveTradingConfirmText,
       limits: {
         maxLiveTradeQuantity: Number(process.env.MAX_LIVE_TRADE_QUANTITY || 1000),
         maxDailyLiveTrades: Number(process.env.MAX_DAILY_LIVE_TRADES || 1),

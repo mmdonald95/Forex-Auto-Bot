@@ -61,7 +61,6 @@ const validationStatus = document.querySelector("[data-validation-status]");
 const validationDetail = document.querySelector("[data-validation-detail]");
 const liveTradeForm = document.querySelector("[data-live-trade-form]");
 const liveTradeButton = document.querySelector("[data-live-trade-button]");
-const liveConfirm = document.querySelector("[data-live-confirm]");
 const dailyLossLock = document.querySelector("[data-daily-loss-lock]");
 const dailyProfitLock = document.querySelector("[data-daily-profit-lock]");
 const emergencyStopButton = document.querySelector("[data-emergency-stop]");
@@ -1026,9 +1025,6 @@ async function loadLiveTradingStatus() {
     if (liveTradeButton) {
       liveTradeButton.disabled = !(data.liveExecutionReady && data.botArmed);
     }
-    if (liveConfirm) {
-      liveConfirm.placeholder = data.confirmText;
-    }
   } catch (error) {
     if (liveStatus) {
       liveStatus.textContent = error.message;
@@ -1063,7 +1059,7 @@ async function loadValidationStatus() {
 
     validationStatus.textContent = validation.approved ? "Ready for live review" : "Live locked";
     validationDetail.textContent = validation.approved
-      ? `${validation.strategy.name} passed validation requirements. Manual confirmation is still required before live orders.`
+      ? `${validation.strategy.name} passed validation requirements. Automatic execution still requires bot authorization and risk checks.`
       : `${validation.strategy.name} is not live-ready: ${(validation.failures || []).join(", ")}.`;
   } catch (error) {
     validationStatus.textContent = "Live locked";
@@ -1164,7 +1160,6 @@ async function executeLiveTrade(event) {
     market: formData.get("market"),
     quantity: formData.get("quantity"),
     maxSpreadPips: formData.get("maxSpreadPips"),
-    confirmText: formData.get("confirmText"),
     riskPerTrade: settings.get("riskPerTrade") || 1,
     dailyStop: settings.get("dailyStop") || 4,
     rewardRiskRatio: settings.get("rewardRiskRatio") || 2,
@@ -1215,7 +1210,7 @@ startBotButtons.forEach((button) => {
     try {
       await saveBotSettings(true, "Starting bot...");
       if (liveStatus) {
-        liveStatus.textContent = "Bot started. Live orders still require a valid BUY or SELL signal and confirmation phrase.";
+        liveStatus.textContent = "Bot started. Automatic trades still require a valid BUY or SELL signal and risk approval.";
       }
     } catch (error) {
       settingsStatus.textContent = error.message;
