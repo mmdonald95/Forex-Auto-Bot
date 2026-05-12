@@ -117,6 +117,10 @@
             <span>Live trading unlocked</span>
             <input type="checkbox" name="liveTradingUnlocked" data-live-trading-toggle>
           </label>
+          <label class="toggle-row light full-field">
+            <span>Authorize automatic live trades within these risk limits</span>
+            <input type="checkbox" name="autoExecutionAuthorized" data-auto-execution-authorization>
+          </label>
           <div class="bot-arm-actions">
             <button class="button primary" type="button" data-start-bot>Start Bot</button>
             <button class="button secondary dark" type="button" data-stop-bot>Stop Bot</button>
@@ -180,7 +184,7 @@
       <div class="bot-runner">
         <div>
           <p class="bot-runner-title">FOREX.com market order with attached stop and limit</p>
-          <p>Live execution requires the always-on backend lock, Start Bot, a BUY or SELL signal, safe spread, and the confirmation phrase.</p>
+          <p>Automatic execution is authorized when the bot is enabled. Every trade still has to pass the risk manager, spread limit, daily loss limit, and stop-loss requirement.</p>
         </div>
         <div class="bot-actions">
           <button class="button primary" type="button" data-start-bot-live>Start Bot</button>
@@ -215,7 +219,7 @@
           <input type="text" data-daily-profit-lock value="Loading..." readonly>
         </label>
         <label class="full-field">
-          Confirmation phrase
+          Manual trade confirmation phrase
           <input type="text" name="confirmText" data-live-confirm placeholder="Live trading is locked">
         </label>
         <button class="button danger full" type="submit" data-live-trade-button>Execute Live Trade</button>
