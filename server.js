@@ -504,6 +504,11 @@ function getDailyLossLimit(settings = null) {
   return maxDailyLossUsd;
 }
 
+function getDailyProfitGoal(settings = null) {
+  const requested = parseBrokerNumber(settings?.daily_profit_goal_usd);
+  return requested !== null && requested > 0 ? requested : null;
+}
+
 function findTradingAccounts(account) {
   const directCandidates = [
     account.TradingAccounts,
@@ -1836,6 +1841,7 @@ async function handleBotSettings(req, res) {
       risk_per_trade: Number(body.riskPerTrade ?? 1.5),
       daily_stop: Number(body.dailyStop ?? 4),
       max_daily_loss_usd: getDailyLossLimit({ max_daily_loss_usd: body.maxDailyLossUsd }),
+      daily_profit_goal_usd: getDailyProfitGoal({ daily_profit_goal_usd: body.dailyProfitGoalUsd }),
       news_filter: Boolean(body.newsFilter ?? true),
       auto_compound: Boolean(body.autoCompound ?? false),
       bot_enabled: Boolean(body.botEnabled ?? false),
@@ -1847,9 +1853,10 @@ async function handleBotSettings(req, res) {
       .select("*")
       .single();
 
-    if (error && /max_daily_loss_usd/i.test(error.message || "")) {
+    if (error && /max_daily_loss_usd|daily_profit_goal_usd/i.test(error.message || "")) {
       const compatibleSettings = { ...settings };
       delete compatibleSettings.max_daily_loss_usd;
+      delete compatibleSettings.daily_profit_goal_usd;
       ({ data, error } = await supabase
         .from("bot_settings")
         .insert(compatibleSettings)
@@ -1916,14 +1923,17 @@ async function handleTradeLog(req, res) {
 async function handleLiveTradingStatus(req, res) {
   let latestSettings = null;
   let dailyLoss = 0;
+  let dailyProfit = 0;
   try {
     const profile = await getOrCreateDefaultProfile();
     latestSettings = await getLatestBotSettings(profile.id);
     dailyLoss = await getTodayRealizedLoss(profile.id);
+    dailyProfit = await getTodayRealizedProfit(profile.id);
   } catch (error) {
     writeDebug("live-status-safety-error", { error: error.message });
   }
   const dailyLossLimit = getDailyLossLimit(latestSettings);
+  const dailyProfitGoal = getDailyProfitGoal(latestSettings);
 
   sendJson(res, 200, {
     ok: true,
@@ -1937,8 +1947,11 @@ async function handleLiveTradingStatus(req, res) {
       maxLiveSpreadPips,
       maxDailyLossUsd: dailyLossLimit,
       backendMaxDailyLossUsd: maxDailyLossUsd,
+      dailyProfitGoalUsd: dailyProfitGoal,
     },
     dailyLoss,
+    dailyProfit,
+    profitGoalReached: dailyProfitGoal !== null && dailyProfit >= dailyProfitGoal,
     message: liveTradingEnabled
       ? "Live trading is enabled on this backend. Bot enabled must also be checked before orders can be sent."
       : "Live trading is locked. Set ENABLE_LIVE_TRADING=true on the always-on backend only when you are ready.",
@@ -2034,6 +2047,24 @@ async function getTodayRealizedLoss(profileId) {
   return (data || []).reduce((total, row) => {
     const value = parseBrokerNumber(row.profit_loss);
     return value !== null && value < 0 ? total + Math.abs(value) : total;
+  }, 0);
+}
+
+async function getTodayRealizedProfit(profileId) {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("trade_logs")
+    .select("profit_loss")
+    .eq("profile_id", profileId)
+    .gte("created_at", todaysIsoStart());
+
+  if (error) {
+    throw error;
+  }
+
+  return (data || []).reduce((total, row) => {
+    const value = parseBrokerNumber(row.profit_loss);
+    return value !== null && value > 0 ? total + value : total;
   }, 0);
 }
 
@@ -2158,6 +2189,14 @@ async function handleLiveTradeExecute(req, res) {
     const dailyLossLimit = getDailyLossLimit(latestSettings);
     if (realizedLossToday >= dailyLossLimit) {
       throw new Error(`Daily loss lockout is active. Realized loss ${realizedLossToday.toFixed(2)} is at or above ${dailyLossLimit.toFixed(2)}.`);
+    }
+
+    const dailyProfitGoal = getDailyProfitGoal(latestSettings);
+    if (dailyProfitGoal !== null) {
+      const realizedProfitToday = await getTodayRealizedProfit(profile.id);
+      if (realizedProfitToday >= dailyProfitGoal) {
+        throw new Error(`Daily profit goal reached. Realized profit ${realizedProfitToday.toFixed(2)} is at or above ${dailyProfitGoal.toFixed(2)}, so no new live trades will be opened today.`);
+      }
     }
 
     const todaysLiveTrades = await countTodayLiveTrades(profile.id);

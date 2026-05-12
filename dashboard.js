@@ -31,6 +31,7 @@ const dbTrades = document.querySelector("[data-db-trades]");
 const settingsForm = document.querySelector("[data-settings-form]");
 const settingsStatus = document.querySelector("[data-settings-status]");
 const maxDailyLossInput = document.querySelector("[data-max-daily-loss]");
+const dailyProfitGoalInput = document.querySelector("[data-daily-profit-goal]");
 const startBotButtons = document.querySelectorAll("[data-start-bot], [data-start-bot-live]");
 const stopBotButtons = document.querySelectorAll("[data-stop-bot], [data-stop-bot-live]");
 const runBotButton = document.querySelector("[data-run-bot]");
@@ -56,6 +57,7 @@ const liveTradeForm = document.querySelector("[data-live-trade-form]");
 const liveTradeButton = document.querySelector("[data-live-trade-button]");
 const liveConfirm = document.querySelector("[data-live-confirm]");
 const dailyLossLock = document.querySelector("[data-daily-loss-lock]");
+const dailyProfitLock = document.querySelector("[data-daily-profit-lock]");
 const emergencyStopButton = document.querySelector("[data-emergency-stop]");
 const reconcileLiveButton = document.querySelector("[data-reconcile-live]");
 const liveReconcileList = document.querySelector("[data-live-reconcile-list]");
@@ -755,6 +757,7 @@ function getBotSettingsPayload(botEnabledOverride = null) {
     riskPerTrade,
     dailyStop: formData.get("dailyStop"),
     maxDailyLossUsd: formData.get("maxDailyLossUsd"),
+    dailyProfitGoalUsd: formData.get("dailyProfitGoalUsd"),
     newsFilter: formData.has("newsFilter"),
     botEnabled,
   };
@@ -868,9 +871,17 @@ async function loadLiveTradingStatus() {
     if (dailyLossLock) {
       dailyLossLock.value = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;
     }
+    if (dailyProfitLock) {
+      dailyProfitLock.value = data.limits.dailyProfitGoalUsd
+        ? `${money(data.dailyProfit || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.dailyProfitGoalUsd, accountCurrency.textContent || "USD")}`
+        : `${money(data.dailyProfit || 0, accountCurrency.textContent || "USD")} / No goal set`;
+    }
     if (maxDailyLossInput && document.activeElement !== maxDailyLossInput) {
       maxDailyLossInput.max = data.limits.backendMaxDailyLossUsd || data.limits.maxDailyLossUsd;
       maxDailyLossInput.value = data.limits.maxDailyLossUsd;
+    }
+    if (dailyProfitGoalInput && document.activeElement !== dailyProfitGoalInput && data.limits.dailyProfitGoalUsd) {
+      dailyProfitGoalInput.value = data.limits.dailyProfitGoalUsd;
     }
     if (liveTradeButton) {
       liveTradeButton.disabled = !(data.liveTradingEnabled && data.botArmed);

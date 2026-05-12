@@ -98,6 +98,10 @@
             <input type="number" name="maxDailyLossUsd" value="100" min="1" max="100" step="1" data-max-daily-loss>
           </label>
           <label>
+            Daily profit goal ($)
+            <input type="number" name="dailyProfitGoalUsd" value="50" min="1" step="1" data-daily-profit-goal>
+          </label>
+          <label>
             Minimum reward:risk
             <input type="number" name="rewardRiskRatio" value="2" min="1" max="5" step="0.25">
           </label>
@@ -194,6 +198,10 @@
         <label>
           Daily loss lock
           <input type="text" data-daily-loss-lock value="Loading..." readonly>
+        </label>
+        <label>
+          Daily profit goal
+          <input type="text" data-daily-profit-lock value="Loading..." readonly>
         </label>
         <label class="full-field">
           Confirmation phrase
