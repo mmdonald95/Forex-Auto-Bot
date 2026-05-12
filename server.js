@@ -495,6 +495,15 @@ function parseBrokerNumber(value) {
   return Number.isFinite(number) ? number : null;
 }
 
+function getDailyLossLimit(settings = null) {
+  const requested = parseBrokerNumber(settings?.max_daily_loss_usd);
+  if (requested !== null && requested > 0) {
+    return Math.min(requested, maxDailyLossUsd);
+  }
+
+  return maxDailyLossUsd;
+}
+
 function findTradingAccounts(account) {
   const directCandidates = [
     account.TradingAccounts,
@@ -1826,16 +1835,27 @@ async function handleBotSettings(req, res) {
       profile_id: profile.id,
       risk_per_trade: Number(body.riskPerTrade ?? 1.5),
       daily_stop: Number(body.dailyStop ?? 4),
+      max_daily_loss_usd: getDailyLossLimit({ max_daily_loss_usd: body.maxDailyLossUsd }),
       news_filter: Boolean(body.newsFilter ?? true),
       auto_compound: Boolean(body.autoCompound ?? false),
       bot_enabled: Boolean(body.botEnabled ?? false),
       updated_at: new Date().toISOString(),
     };
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from("bot_settings")
       .insert(settings)
       .select("*")
       .single();
+
+    if (error && /max_daily_loss_usd/i.test(error.message || "")) {
+      const compatibleSettings = { ...settings };
+      delete compatibleSettings.max_daily_loss_usd;
+      ({ data, error } = await supabase
+        .from("bot_settings")
+        .insert(compatibleSettings)
+        .select("*")
+        .single());
+    }
 
     if (error) {
       throw error;
@@ -1903,6 +1923,7 @@ async function handleLiveTradingStatus(req, res) {
   } catch (error) {
     writeDebug("live-status-safety-error", { error: error.message });
   }
+  const dailyLossLimit = getDailyLossLimit(latestSettings);
 
   sendJson(res, 200, {
     ok: true,
@@ -1914,7 +1935,8 @@ async function handleLiveTradingStatus(req, res) {
       maxDailyLiveTrades,
       maxOpenPositions,
       maxLiveSpreadPips,
-      maxDailyLossUsd,
+      maxDailyLossUsd: dailyLossLimit,
+      backendMaxDailyLossUsd: maxDailyLossUsd,
     },
     dailyLoss,
     message: liveTradingEnabled
@@ -2133,8 +2155,9 @@ async function handleLiveTradeExecute(req, res) {
     }
 
     const realizedLossToday = await getTodayRealizedLoss(profile.id);
-    if (realizedLossToday >= maxDailyLossUsd) {
-      throw new Error(`Daily loss lockout is active. Realized loss ${realizedLossToday.toFixed(2)} is at or above ${maxDailyLossUsd.toFixed(2)}.`);
+    const dailyLossLimit = getDailyLossLimit(latestSettings);
+    if (realizedLossToday >= dailyLossLimit) {
+      throw new Error(`Daily loss lockout is active. Realized loss ${realizedLossToday.toFixed(2)} is at or above ${dailyLossLimit.toFixed(2)}.`);
     }
 
     const todaysLiveTrades = await countTodayLiveTrades(profile.id);
