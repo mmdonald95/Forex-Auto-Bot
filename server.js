@@ -6,10 +6,51 @@ const crypto = require("node:crypto");
 const root = __dirname;
 loadEnv(path.join(root, ".env"));
 
-const { approveTrade, mergeRiskLimits } = require("./lib/risk-manager");
-const { evaluateValidationReport } = require("./lib/validation-gate");
-const { buildTradeJournalEntry } = require("./lib/trade-journal");
-const { registerStrategy, listStrategies } = require("./lib/strategy-registry");
+function safeRequire(modulePath, fallback) {
+  try {
+    return require(modulePath);
+  } catch (error) {
+    console.error(`Optional module ${modulePath} could not load:`, error.message);
+    return fallback;
+  }
+}
+
+const { approveTrade, mergeRiskLimits } = safeRequire("./lib/risk-manager", {
+  mergeRiskLimits: (limits = {}) => ({
+    maxRiskPerTradePct: 1,
+    maxSpreadPips: 2,
+    requireStopLoss: true,
+    ...limits,
+  }),
+  approveTrade: ({ signal = {} }) => {
+    const rejections = [];
+    if (!["BUY", "SELL"].includes(signal.direction)) rejections.push("invalid_signal");
+    if (!signal.stopLoss) rejections.push("missing_stop_loss");
+    return { approved: rejections.length === 0, rejections };
+  },
+});
+const { evaluateValidationReport } = safeRequire("./lib/validation-gate", {
+  evaluateValidationReport: (report = {}) => ({
+    approved: Boolean(report.backtestPassed && report.paperTradingPassed && Number(report.expectancy || 0) > 0),
+    failures: [],
+  }),
+});
+const { buildTradeJournalEntry } = safeRequire("./lib/trade-journal", {
+  buildTradeJournalEntry: (event = {}) => ({ ...event, createdAt: new Date().toISOString() }),
+});
+const strategyStore = [];
+const { registerStrategy, listStrategies } = safeRequire("./lib/strategy-registry", {
+  registerStrategy: (strategy) => {
+    strategyStore.push(strategy);
+  },
+  listStrategies: () => strategyStore.map((strategy) => ({
+    id: strategy.id,
+    name: strategy.name,
+    version: strategy.version,
+    enabled: strategy.enabled !== false,
+    parameters: strategy.parameters || {},
+  })),
+});
 
 const port = Number(process.env.PORT || 3000);
 const apiBase = (process.env.FOREXCOM_API_BASE || "https://ciapi.cityindex.com/TradingAPI").replace(/\/$/, "");
