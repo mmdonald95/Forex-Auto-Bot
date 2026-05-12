@@ -20,6 +20,8 @@ const accountGreeting = document.querySelector("[data-account-greeting]");
 const signinLink = document.querySelector("[data-signin-link]");
 const dashboardTabs = document.querySelectorAll("[data-dashboard-tab]");
 const dashboardPanels = document.querySelectorAll("[data-dashboard-tab-panel]");
+const activityStatus = document.querySelector("[data-activity-status]");
+const activityList = document.querySelector("[data-activity-list]");
 const marketForm = document.querySelector("[data-dashboard-market-form]");
 const marketsStatus = document.querySelector("[data-dashboard-markets-status]");
 const marketsList = document.querySelector("[data-dashboard-markets-list]");
@@ -212,6 +214,69 @@ function setRows(container, items, columns, emptyText) {
     }
 
     container.appendChild(row);
+  }
+}
+
+function renderActivity(events = []) {
+  if (!activityList) {
+    return;
+  }
+
+  activityList.innerHTML = "";
+
+  if (!events.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No trading activity yet.";
+    activityList.appendChild(empty);
+    return;
+  }
+
+  for (const event of events.slice(0, 12)) {
+    const row = document.createElement("div");
+    row.className = `activity-row activity-${event.level || "info"}`;
+
+    const dot = document.createElement("span");
+    dot.className = "activity-dot";
+
+    const body = document.createElement("div");
+    const title = document.createElement("strong");
+    title.textContent = event.title || event.type || "Activity";
+    const detail = document.createElement("span");
+    detail.textContent = event.message || "--";
+
+    const time = document.createElement("time");
+    time.textContent = event.at ? new Date(event.at).toLocaleTimeString() : "--";
+
+    body.appendChild(title);
+    body.appendChild(detail);
+    row.appendChild(dot);
+    row.appendChild(body);
+    row.appendChild(time);
+    activityList.appendChild(row);
+  }
+}
+
+async function loadActivity() {
+  if (!activityList) {
+    return;
+  }
+
+  try {
+    const response = await fetchWithTimeout("/api/activity", {}, 10000);
+    const data = await readJsonResponse(response);
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Unable to load activity.");
+    }
+
+    if (activityStatus) {
+      activityStatus.textContent = `${data.events.length} recent event(s)`;
+    }
+    renderActivity(data.events || []);
+  } catch (error) {
+    if (activityStatus) {
+      activityStatus.textContent = error.message;
+    }
   }
 }
 
@@ -812,6 +877,7 @@ async function saveBotSettings(botEnabledOverride = null, statusText = "Saving..
       : "Bot started. It can analyze, but automatic live execution is not authorized."
     : "Bot stopped and saved.";
   await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
+  await loadActivity();
   return data;
 }
 
@@ -834,6 +900,7 @@ async function setLiveTradingLock(unlocked) {
   }
 
   await loadLiveTradingStatus();
+  await loadActivity();
   return data;
 }
 
@@ -904,9 +971,10 @@ async function runBotRequest(endpoint, statusText) {
     botStatus.textContent = data.scannedMarkets
       ? `Scanned ${data.scannedMarkets} pairs. Decision logged to Supabase.`
       : "Decision logged to Supabase.";
-    await loadSupabaseCheck();
+    await Promise.all([loadSupabaseCheck(), loadActivity()]);
   } catch (error) {
     botStatus.textContent = error.message;
+    await loadActivity();
   }
 }
 
@@ -1029,8 +1097,10 @@ async function emergencyStop() {
       botEnabled.checked = false;
     }
     await Promise.all([loadLiveTradingStatus(), loadSupabaseCheck()]);
+    await loadActivity();
   } catch (error) {
     liveStatus.textContent = error.message;
+    await loadActivity();
   }
 }
 
@@ -1073,8 +1143,10 @@ async function reconcileLiveOrders() {
     renderReconcileRows(data);
     liveStatus.textContent = `Reconciled ${data.positions.length} position(s), ${data.activeOrders.length} active order(s).`;
     openCount.textContent = data.positions.length;
+    await loadActivity();
   } catch (error) {
     liveStatus.textContent = error.message;
+    await loadActivity();
   }
 }
 
@@ -1125,9 +1197,10 @@ async function executeLiveTrade(event) {
     liveOrderTarget.textContent = decision.suggestedTakeProfit ?? "--";
     liveOrderReason.textContent = data.warning || "Live order sent. Confirm the fill, stop, and limit inside FOREX.com.";
     liveStatus.textContent = "Live order sent. Check FOREX.com now.";
-    await Promise.all([loadSnapshot(), loadSupabaseCheck()]);
+    await Promise.all([loadSnapshot(), loadSupabaseCheck(), loadActivity()]);
   } catch (error) {
     liveStatus.textContent = error.message;
+    await loadActivity();
   } finally {
     await loadLiveTradingStatus();
   }
@@ -1226,3 +1299,9 @@ loadLivePrices().catch((error) => {
     livePricesStatus.textContent = error.message;
   }
 });
+loadActivity().catch((error) => {
+  if (activityStatus) {
+    activityStatus.textContent = error.message;
+  }
+});
+window.setInterval(loadActivity, 15000);

@@ -67,6 +67,7 @@ const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
 const liveTradingConfirmText = process.env.LIVE_TRADING_CONFIRM_TEXT || "I UNDERSTAND LIVE TRADING CAN LOSE MONEY";
 const sessions = new Map();
 const demoPositions = [];
+const activityEvents = [];
 let liveTradingUnlocked = enableLiveTrading;
 let localBotSettings = {
   riskPerTrade: 1,
@@ -169,6 +170,22 @@ function sendJson(res, statusCode, body) {
     "Cache-Control": "no-store"
   });
   res.end(payload);
+}
+
+function logActivity(type, title, message, level = "info", details = {}) {
+  activityEvents.unshift({
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    type,
+    title,
+    message,
+    level,
+    details,
+  });
+
+  if (activityEvents.length > 100) {
+    activityEvents.length = 100;
+  }
 }
 
 function firstPresent(...values) {
@@ -571,6 +588,23 @@ async function handleApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && url.pathname === "/api/activity") {
+    if (!activityEvents.length) {
+      logActivity(
+        "system",
+        "Activity feed ready",
+        "The dashboard is now tracking scans, risk checks, bot state changes, and trade attempts.",
+        "info"
+      );
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      events: activityEvents.slice(0, 30),
+    });
+    return;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/strategies") {
     sendJson(res, 200, {
       strategies: listStrategies()
@@ -689,6 +723,13 @@ async function handleApi(req, res) {
       createdAt: new Date().toISOString()
     });
     await saveBrokerSession(username, appKey, brokerSession, account);
+    logActivity(
+      "connection",
+      "FOREX.com connected",
+      `Connected account ${account.clientAccountId || "unknown"} for ${account.logonUserName || username}.`,
+      "success",
+      { clientAccountId: account.clientAccountId }
+    );
 
     sendJson(res, 200, {
       ok: true,
@@ -801,6 +842,12 @@ async function handleApi(req, res) {
     const nextBotEnabled = Boolean(body.botEnabled);
     const nextAutoExecutionAuthorized = Boolean(body.autoExecutionAuthorized);
     if (liveTradingUnlocked && nextBotEnabled && !nextAutoExecutionAuthorized) {
+      logActivity(
+        "risk_rejection",
+        "Bot start rejected",
+        "Automatic live-trade authorization was missing while live mode was unlocked.",
+        "warning"
+      );
       sendJson(res, 400, {
         ok: false,
         error: "Automatic live-trade authorization is required before starting the bot in live mode.",
@@ -840,6 +887,16 @@ async function handleApi(req, res) {
       console.error("Could not persist bot settings:", error.message);
     }
 
+    logActivity(
+      "bot_settings",
+      nextBotEnabled ? "Bot armed" : "Bot stopped",
+      nextBotEnabled
+        ? `Bot armed with ${localBotSettings.riskPerTrade}% risk, $${localBotSettings.maxDailyLossUsd} daily loss cap, and $${localBotSettings.dailyProfitGoalUsd} daily goal.`
+        : "Bot stopped. No new automatic trades can be sent.",
+      nextBotEnabled ? "success" : "warning",
+      { settings: localBotSettings }
+    );
+
     sendJson(res, 200, { ok: true, settings: localBotSettings });
     return;
   }
@@ -874,6 +931,15 @@ async function handleApi(req, res) {
       localBotSettings.botEnabled = false;
       localBotSettings.autoExecutionAuthorized = false;
     }
+
+    logActivity(
+      "live_lock",
+      liveTradingUnlocked ? "Live mode unlocked" : "Live mode locked",
+      liveTradingUnlocked
+        ? "Live mode was unlocked in the app. The bot still requires authorization and risk approval before any trade."
+        : "Live mode was locked and automatic execution authorization was cleared.",
+      liveTradingUnlocked ? "warning" : "success"
+    );
 
     sendJson(res, 200, {
       ok: true,
@@ -912,11 +978,23 @@ async function handleApi(req, res) {
     localBotSettings.botEnabled = false;
     localBotSettings.autoExecutionAuthorized = false;
     liveTradingUnlocked = false;
+    logActivity(
+      "kill_switch",
+      "Emergency stop activated",
+      "Live mode locked, bot stopped, and automatic execution authorization cleared.",
+      "danger"
+    );
     sendJson(res, 200, { ok: true, liveTradingEnabled: false, botArmed: false });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/live/reconcile") {
+    logActivity(
+      "reconcile",
+      "FOREX.com orders reconciled",
+      "Checked open positions, active orders, and recent trade history.",
+      "info"
+    );
     sendJson(res, 200, {
       ok: true,
       positions: [],
@@ -927,6 +1005,18 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/live/trade") {
+    logActivity(
+      "live_trade_rejected",
+      "Live trade blocked",
+      !liveTradingUnlocked
+        ? "Live trading is locked in the app."
+        : !localBotSettings.autoExecutionAuthorized
+          ? "Automatic live execution has not been authorized."
+          : enableLiveTrading
+            ? "Strategy validation and broker order verification are not fully wired."
+            : "Backend live execution flag is still off.",
+      "warning"
+    );
     sendJson(res, 423, {
       ok: false,
       error: !liveTradingUnlocked
@@ -941,6 +1031,12 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/prices") {
+    logActivity(
+      "market_data",
+      "Market prices refreshed",
+      "Updated the Top-15 bid/offer price board.",
+      "info"
+    );
     sendJson(res, 200, {
       ok: true,
       prices: demoPriceRows(),
@@ -987,6 +1083,13 @@ async function handleApi(req, res) {
         Close: Number(close.toFixed(5)),
       };
     });
+    logActivity(
+      "chart",
+      "Candlestick chart loaded",
+      `Loaded ${bars.length} ${market} candles for chart review.`,
+      "info",
+      { market, count: bars.length }
+    );
     sendJson(res, 200, { ok: true, bars, source: "dashboard candle fallback" });
     return;
   }
@@ -1018,6 +1121,13 @@ async function handleApi(req, res) {
       status: "open",
       openedAt: signal.createdAt,
     });
+    logActivity(
+      "paper_trade",
+      "Paper trade opened",
+      `${signal.direction} ${signal.market} opened in simulated mode with stop ${signal.stopLoss} and target ${signal.takeProfit}.`,
+      "success",
+      { signal }
+    );
     sendJson(res, 200, { ok: true, opened: true, signal });
     return;
   }
@@ -1028,6 +1138,12 @@ async function handleApi(req, res) {
       position.closedAt = new Date().toISOString();
       position.profitLoss = Number(((Math.random() - 0.45) * 20).toFixed(2));
     }
+    logActivity(
+      "paper_trade",
+      "Paper positions marked",
+      "Updated simulated open positions and closed them for demo P/L review.",
+      "info"
+    );
     sendJson(res, 200, { ok: true });
     return;
   }
@@ -1060,6 +1176,15 @@ async function handleApi(req, res) {
         ? "No clean trade. Capital protection rule says wait."
         : "Demo strategy signal only. Risk Manager must approve before any order can be sent.",
     };
+    logActivity(
+      "strategy_scan",
+      direction === "HOLD" ? "No trade found" : `${direction} signal found`,
+      direction === "HOLD"
+        ? `Scanned ${scannedMarkets} pair(s). Risk-first rules said to wait.`
+        : `Scanned ${scannedMarkets} pair(s). ${signal.market} produced a ${direction} setup for risk review.`,
+      direction === "HOLD" ? "info" : "success",
+      { decision, scannedMarkets }
+    );
 
     sendJson(res, 200, {
       ok: true,

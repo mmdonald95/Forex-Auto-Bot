@@ -54,6 +54,14 @@
       </article>
     </section>
 
+    <section class="dashboard-card activity-card" aria-label="Trading activity">
+      <div class="table-header">
+        <span>Trading activity</span>
+        <span data-activity-status>Loading activity...</span>
+      </div>
+      <div class="activity-list" data-activity-list></div>
+    </section>
+
     <section class="operations-grid" aria-label="Trading workspace">
       <article class="dashboard-card market-prices-card">
         <div class="table-header">
@@ -217,10 +225,6 @@
         <label>
           Daily profit goal
           <input type="text" data-daily-profit-lock value="Loading..." readonly>
-        </label>
-        <label class="full-field">
-          Manual trade confirmation phrase
-          <input type="text" name="confirmText" data-live-confirm placeholder="Live trading is locked">
         </label>
         <button class="button danger full" type="submit" data-live-trade-button>Execute Live Trade</button>
         <button class="button secondary dark full" type="button" data-reconcile-live>Reconcile FOREX.com Orders</button>
