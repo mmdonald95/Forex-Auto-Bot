@@ -445,6 +445,15 @@ async function getLatestPriceSnapshots(limit = 50) {
   }
 }
 
+async function getLatestReconciliation() {
+  try {
+    const { data } = await supabaseFetch("/account_reconciliations?select=*&broker=eq.FOREX.com&order=updated_at.desc&limit=1");
+    return Array.isArray(data) ? data[0] : null;
+  } catch {
+    return null;
+  }
+}
+
 async function getSupabaseActivity(limit = 30) {
   try {
     const { data } = await supabaseFetch(`/bot_activity?select=*&order=created_at.desc&limit=${limit}`);
@@ -707,6 +716,156 @@ function pipSizeForMarket(marketName = "") {
 function average(values = []) {
   const usable = values.filter((value) => Number.isFinite(value));
   return usable.length ? usable.reduce((total, value) => total + value, 0) / usable.length : null;
+}
+
+function arrayFromAny(data, keys = []) {
+  for (const key of keys) {
+    const value = data?.[key];
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+
+  if (Array.isArray(data)) {
+    return data;
+  }
+
+  for (const value of Object.values(data || {})) {
+    if (Array.isArray(value)) {
+      return value;
+    }
+  }
+
+  return [];
+}
+
+function numericValue(source = {}, keys = []) {
+  for (const key of keys) {
+    const value = parseBrokerNumber(source?.[key]);
+    if (value !== null) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function sumByKeys(rows = [], keys = []) {
+  return rows.reduce((total, row) => {
+    const value = numericValue(row, keys);
+    return value === null ? total : total + value;
+  }, 0);
+}
+
+function getPrimaryTradingAccountId(account = {}) {
+  const primary = account.tradingAccounts?.[0] || findTradingAccounts(account)[0] || {};
+  return firstPresent(
+    primary.tradingAccountId,
+    primary.TradingAccountId,
+    account.tradingAccountId,
+    account.TradingAccountId
+  );
+}
+
+async function fetchForexOrderResource(session, resourcePath, params = {}) {
+  const requestUrl = new URL(`${apiBase}/order/${resourcePath}`);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined && value !== null && value !== "") {
+      requestUrl.searchParams.set(key, String(value));
+    }
+  }
+
+  const { response, data } = await fetchJsonWithTimeout(requestUrl.toString(), {
+    method: "GET",
+    headers: forexHeaders(session),
+  }, 15000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || `${resourcePath} failed (${response.status}).`);
+  }
+
+  return data;
+}
+
+async function reconcileForexAccount(session) {
+  if (!session) {
+    throw new Error("Connect to FOREX.com first.");
+  }
+
+  const tradingAccountId = getPrimaryTradingAccountId(session.account);
+  if (!tradingAccountId) {
+    throw new Error("FOREX.com did not return a TradingAccountId.");
+  }
+
+  const [positionsResult, historyResult, activeOrdersResult] = await Promise.allSettled([
+    fetchForexOrderResource(session, "openpositions", { TradingAccountId: tradingAccountId }),
+    fetchForexOrderResource(session, "tradehistory", { TradingAccountId: tradingAccountId, MaxResults: 100 }),
+    fetchForexOrderResource(session, "activestoplimitorders", { TradingAccountId: tradingAccountId }),
+  ]);
+
+  const positionsData = positionsResult.status === "fulfilled" ? positionsResult.value : {};
+  const historyData = historyResult.status === "fulfilled" ? historyResult.value : {};
+  const activeOrdersData = activeOrdersResult.status === "fulfilled" ? activeOrdersResult.value : {};
+  const positions = arrayFromAny(positionsData, ["OpenPositions", "openPositions", "Positions", "positions"]);
+  const tradeHistory = arrayFromAny(historyData, ["TradeHistory", "tradeHistory", "Trades", "trades", "History", "history"]);
+  const activeOrders = arrayFromAny(activeOrdersData, ["ActiveStopLimitOrders", "activeStopLimitOrders", "Orders", "orders"]);
+  const realizedProfitLoss = sumByKeys(tradeHistory, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit", "NetProfitAndLoss"]);
+  const openProfitLoss = sumByKeys(positions, ["OpenTradeEquity", "OTE", "ProfitAndLoss", "UnrealisedPnl", "UnrealizedPnl", "PnL"]);
+  const summary = {
+    tradingAccountId: String(tradingAccountId),
+    openPositionCount: positions.length,
+    activeOrderCount: activeOrders.length,
+    tradeHistoryCount: tradeHistory.length,
+    realizedProfitLoss,
+    openProfitLoss,
+    totalProfitLoss: realizedProfitLoss + openProfitLoss,
+    reconciledAt: new Date().toISOString(),
+    errors: [
+      positionsResult.status === "rejected" ? `openpositions: ${positionsResult.reason.message}` : null,
+      historyResult.status === "rejected" ? `tradehistory: ${historyResult.reason.message}` : null,
+      activeOrdersResult.status === "rejected" ? `activestoplimitorders: ${activeOrdersResult.reason.message}` : null,
+    ].filter(Boolean),
+  };
+
+  return {
+    positions,
+    activeOrders,
+    tradeHistory,
+    summary,
+    raw: {
+      positions: positionsData,
+      tradeHistory: historyData,
+      activeOrders: activeOrdersData,
+    },
+  };
+}
+
+async function saveReconciliation(session, reconciliation) {
+  try {
+    const profile = await getOrCreateProfile();
+    await supabaseFetch("/account_reconciliations", {
+      method: "POST",
+      prefer: "resolution=merge-duplicates,return=minimal",
+      body: JSON.stringify([{
+        profile_id: profile.id,
+        broker: "FOREX.com",
+        client_account_id: String(session.account?.clientAccountId || ""),
+        trading_account_id: reconciliation.summary.tradingAccountId,
+        realized_profit_loss: reconciliation.summary.realizedProfitLoss,
+        open_profit_loss: reconciliation.summary.openProfitLoss,
+        total_profit_loss: reconciliation.summary.totalProfitLoss,
+        open_position_count: reconciliation.summary.openPositionCount,
+        active_order_count: reconciliation.summary.activeOrderCount,
+        trade_history_count: reconciliation.summary.tradeHistoryCount,
+        raw_positions: reconciliation.positions,
+        raw_active_orders: reconciliation.activeOrders,
+        raw_trade_history: reconciliation.tradeHistory,
+        errors: reconciliation.summary.errors,
+        updated_at: new Date().toISOString(),
+      }]),
+    });
+  } catch (error) {
+    console.error("Could not save reconciliation:", error.message);
+  }
 }
 
 async function fetchRealCandles(session, marketName, maxResults = 80) {
@@ -1000,6 +1159,7 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/forexcom/snapshot") {
     const session = await resolveSession(url.searchParams.get("sessionId"));
     const latest = await getLatestAccountSnapshot();
+    const latestReconciliation = await getLatestReconciliation();
     const profile = await getOrCreateProfile();
 
     if (!session && latest) {
@@ -1014,8 +1174,15 @@ async function handleApi(req, res) {
         accountValue: balance,
         fallbackBalance: balance,
         margin: latest.raw_margin || null,
-        positions: [],
-        tradeHistory: [],
+        positions: latestReconciliation?.raw_positions || [],
+        tradeHistory: latestReconciliation?.raw_trade_history || [],
+        activeOrders: latestReconciliation?.raw_active_orders || [],
+        performanceSummary: latestReconciliation ? {
+          realizedProfitLoss: latestReconciliation.realized_profit_loss,
+          openProfitLoss: latestReconciliation.open_profit_loss,
+          totalProfitLoss: latestReconciliation.total_profit_loss,
+          reconciledAt: latestReconciliation.updated_at,
+        } : null,
         primaryTradingAccount: latest.trading_account_id ? { tradingAccountId: latest.trading_account_id } : null,
         accountValueSource: latest.source || "Supabase account_snapshots",
       });
@@ -1040,14 +1207,33 @@ async function handleApi(req, res) {
     }
 
     const balance = pickBalance(session.account) || pickBalance(latest || {});
+    let reconciliation = null;
+    try {
+      reconciliation = await reconcileForexAccount(session);
+      await saveReconciliation(session, reconciliation);
+    } catch (error) {
+      logActivity(
+        "reconcile_error",
+        "FOREX.com reconciliation failed",
+        error.message,
+        "warning"
+      );
+    }
 
     sendJson(res, 200, {
       ok: true,
       account: session.account,
       accountValue: balance,
       fallbackBalance: latest ? pickBalance(latest) : null,
-      positions: [],
-      tradeHistory: [],
+      positions: reconciliation?.positions || latestReconciliation?.raw_positions || [],
+      tradeHistory: reconciliation?.tradeHistory || latestReconciliation?.raw_trade_history || [],
+      activeOrders: reconciliation?.activeOrders || latestReconciliation?.raw_active_orders || [],
+      performanceSummary: reconciliation?.summary || (latestReconciliation ? {
+        realizedProfitLoss: latestReconciliation.realized_profit_loss,
+        openProfitLoss: latestReconciliation.open_profit_loss,
+        totalProfitLoss: latestReconciliation.total_profit_loss,
+        reconciledAt: latestReconciliation.updated_at,
+      } : null),
       primaryTradingAccount: session.account?.tradingAccounts?.[0] || null,
       accountValueSource: balance ? "FOREX.com session or Supabase snapshot" : "connected session fallback"
     });
@@ -1090,6 +1276,7 @@ async function handleApi(req, res) {
       tradeLogs: await countSupabaseRows("trade_logs"),
       accountSnapshots: await countSupabaseRows("account_snapshots"),
       priceSnapshots: await countSupabaseRows("price_snapshots"),
+      accountReconciliations: await countSupabaseRows("account_reconciliations"),
     };
     sendJson(res, 200, { ok: true, profile, counts });
     return;
@@ -1246,17 +1433,29 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/live/reconcile") {
+    const session = await resolveSession(url.searchParams.get("sessionId"));
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first.",
+      });
+      return;
+    }
+    const reconciliation = await reconcileForexAccount(session);
+    await saveReconciliation(session, reconciliation);
     logActivity(
       "reconcile",
       "FOREX.com orders reconciled",
-      "Checked open positions, active orders, and recent trade history.",
-      "info"
+      `Checked ${reconciliation.positions.length} open position(s), ${reconciliation.activeOrders.length} active order(s), and ${reconciliation.tradeHistory.length} trade history row(s).`,
+      reconciliation.summary.errors.length ? "warning" : "info",
+      reconciliation.summary
     );
     sendJson(res, 200, {
       ok: true,
-      positions: [],
-      activeOrders: [],
-      tradeHistory: [],
+      positions: reconciliation.positions,
+      activeOrders: reconciliation.activeOrders,
+      tradeHistory: reconciliation.tradeHistory,
+      summary: reconciliation.summary,
     });
     return;
   }

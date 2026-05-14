@@ -31,6 +31,7 @@ const dbBrokers = document.querySelector("[data-db-brokers]");
 const dbSettings = document.querySelector("[data-db-settings]");
 const dbTrades = document.querySelector("[data-db-trades]");
 const dbPrices = document.querySelector("[data-db-prices]");
+const dbReconciliation = document.querySelector("[data-db-reconciliation]");
 const settingsForm = document.querySelector("[data-settings-form]");
 const settingsStatus = document.querySelector("[data-settings-status]");
 const maxDailyLossInput = document.querySelector("[data-max-daily-loss]");
@@ -514,8 +515,15 @@ async function loadSnapshot() {
     "cash",
     "availableToTrade",
   ]);
-  const made = sumPositive(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]);
-  const spent = sumNegativeAbs(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]) || estimateOpenCost(positions);
+  const summary = data.performanceSummary || {};
+  const brokerRealized = parseBrokerNumber(summary.realizedProfitLoss);
+  const brokerOpen = parseBrokerNumber(summary.openProfitLoss);
+  const made = brokerRealized !== null
+    ? Math.max(brokerRealized, 0) + Math.max(brokerOpen || 0, 0)
+    : sumPositive(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]);
+  const spent = brokerRealized !== null
+    ? Math.abs(Math.min(brokerRealized, 0)) + Math.abs(Math.min(brokerOpen || 0, 0))
+    : sumNegativeAbs(history, ["ProfitAndLoss", "RealisedPnl", "RealizedPnl", "PnL", "Profit"]) || estimateOpenCost(positions);
 
   dashboardStatus.textContent = possibleBalance === null
     ? "Connected, but no account value was returned yet."
@@ -822,6 +830,9 @@ async function loadSupabaseCheck() {
     if (dbPrices) {
       dbPrices.textContent = data.counts?.priceSnapshots ?? "--";
     }
+    if (dbReconciliation) {
+      dbReconciliation.textContent = data.counts?.accountReconciliations ?? "--";
+    }
   } catch (error) {
     if (supabaseDbStatus) {
       supabaseDbStatus.textContent = error.message;
@@ -1123,6 +1134,8 @@ function renderReconcileRows(data) {
     `Open positions: ${data.positions?.length || 0}`,
     `Active orders: ${data.activeOrders?.length || 0}`,
     `Recent trades: ${data.tradeHistory?.length || 0}`,
+    `Realized P/L: ${money(data.summary?.realizedProfitLoss || 0, accountCurrency.textContent || "USD")}`,
+    `Open P/L: ${money(data.summary?.openProfitLoss || 0, accountCurrency.textContent || "USD")}`,
   ];
 
   for (const value of summary) {
@@ -1152,7 +1165,7 @@ async function reconcileLiveOrders() {
     renderReconcileRows(data);
     liveStatus.textContent = `Reconciled ${data.positions.length} position(s), ${data.activeOrders.length} active order(s).`;
     openCount.textContent = data.positions.length;
-    await loadActivity();
+    await Promise.all([loadSnapshot(), loadActivity()]);
   } catch (error) {
     liveStatus.textContent = error.message;
     await loadActivity();
