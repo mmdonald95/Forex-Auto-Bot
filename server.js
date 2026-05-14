@@ -17,16 +17,32 @@ function safeRequire(modulePath, fallback) {
 
 const { approveTrade, mergeRiskLimits } = safeRequire("./lib/risk-manager", {
   mergeRiskLimits: (limits = {}) => ({
-    maxRiskPerTradePct: 1,
+    maxRiskAmount: 100,
+    maxRewardRiskRatioMinimum: 2,
     maxSpreadPips: 2,
     requireStopLoss: true,
     ...limits,
   }),
-  approveTrade: ({ signal = {} }) => {
-    const rejections = [];
-    if (!["BUY", "SELL"].includes(signal.direction)) rejections.push("invalid_signal");
-    if (!signal.stopLoss) rejections.push("missing_stop_loss");
-    return { approved: rejections.length === 0, rejections };
+  approveTrade: (trade = {}, limits = {}) => {
+    const merged = {
+      maxRiskAmount: 100,
+      maxRewardRiskRatioMinimum: 2,
+      maxSpreadPips: 2,
+      requireStopLoss: false,
+      ...limits,
+    };
+    const signal = trade.signal || trade;
+    const violations = [];
+    const riskAmount = parseBrokerNumber(signal.riskAmount);
+    const rewardRiskRatio = parseBrokerNumber(signal.rewardRiskRatio);
+    const spreadPips = parseBrokerNumber(signal.spreadPips);
+
+    if (!["BUY", "SELL"].includes(signal.direction)) violations.push("invalid_signal");
+    if (riskAmount !== null && riskAmount > merged.maxRiskAmount) violations.push(`risk_amount_over_${merged.maxRiskAmount}`);
+    if (rewardRiskRatio !== null && rewardRiskRatio < merged.maxRewardRiskRatioMinimum) violations.push("reward_risk_too_low");
+    if (spreadPips !== null && spreadPips > merged.maxSpreadPips) violations.push("spread_too_wide");
+    if (merged.requireStopLoss && !signal.stopLoss) violations.push("missing_stop_loss");
+    return { approved: violations.length === 0, violations, rejections: violations, limits: merged };
   },
 });
 const { evaluateValidationReport } = safeRequire("./lib/validation-gate", {
@@ -777,6 +793,8 @@ function evaluateMovingAverageStrategy({ marketName, candles, price, balance, ri
 
   const approval = approveTrade({
     direction,
+    stopLoss: suggestedStop,
+    takeProfit: suggestedTakeProfit,
     riskAmount,
     rewardRiskRatio,
     spreadPips: spreadPips ?? 0,
