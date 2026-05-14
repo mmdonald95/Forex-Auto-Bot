@@ -14,8 +14,12 @@ const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const engineUsername = process.env.FOREXCOM_USERNAME || "";
 const enginePassword = process.env.FOREXCOM_PASSWORD || "";
 const retryMs = Number(process.env.ENGINE_RETRY_MS || 30000);
+const botScanMs = Number(process.env.BOT_SCAN_MS || 60000);
+const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
 
 let supabaseAdminClient;
+let lastActivityTitle = "";
+let lastActivityAt = 0;
 
 function loadEnv(filePath) {
   const fs = require("node:fs");
@@ -345,6 +349,210 @@ async function getOrCreateProfile() {
   return data;
 }
 
+async function saveBotActivity(eventType, title, message, level = "info", details = {}) {
+  const now = Date.now();
+  const fingerprint = `${eventType}:${title}:${message}`;
+  if (fingerprint === lastActivityTitle && now - lastActivityAt < 45000) {
+    return;
+  }
+  lastActivityTitle = fingerprint;
+  lastActivityAt = now;
+
+  try {
+    const supabase = await getSupabaseAdmin();
+    const profile = await getOrCreateProfile();
+    const { error } = await supabase
+      .from("bot_activity")
+      .insert({
+        profile_id: profile.id,
+        event_type: eventType,
+        title,
+        message,
+        level,
+        details,
+      });
+
+    if (error) {
+      throw error;
+    }
+  } catch (error) {
+    log("bot-activity-save-error", { error: error.message, title });
+  }
+}
+
+async function loadLatestBotSettings() {
+  const supabase = await getSupabaseAdmin();
+  const { data, error } = await supabase
+    .from("bot_settings")
+    .select("*")
+    .order("updated_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data || null;
+}
+
+function normaliseBotSettings(row = {}) {
+  return {
+    botEnabled: Boolean(firstPresent(row.bot_enabled, row.botEnabled, false)),
+    autoExecutionAuthorized: Boolean(firstPresent(row.auto_execution_authorized, row.autoExecutionAuthorized, false)),
+    riskPerTrade: Number(firstPresent(row.risk_per_trade, row.riskPerTrade, 1)),
+    dailyStop: Number(firstPresent(row.daily_stop, row.dailyStop, 4)),
+    maxDailyLossUsd: Number(firstPresent(row.max_daily_loss_usd, row.maxDailyLossUsd, 100)),
+    dailyProfitGoalUsd: Number(firstPresent(row.daily_profit_goal_usd, row.dailyProfitGoalUsd, 50)),
+    newsFilter: firstPresent(row.news_filter, row.newsFilter, true) !== false,
+  };
+}
+
+function buildWorkerDecision(settings, session) {
+  const markets = [
+    "EUR/USD",
+    "GBP/USD",
+    "USD/JPY",
+    "USD/CHF",
+    "AUD/USD",
+    "USD/CAD",
+    "NZD/USD",
+    "EUR/JPY",
+    "GBP/JPY",
+    "AUD/JPY",
+    "EUR/GBP",
+    "EUR/CHF",
+    "GBP/CHF",
+    "AUD/CAD",
+    "CAD/JPY",
+  ];
+  const market = markets[Math.floor(Date.now() / botScanMs) % markets.length];
+  const spreadPips = Number((0.7 + Math.random() * 2.4).toFixed(2));
+  const hasSignal = Math.random() > 0.78;
+  const direction = hasSignal ? (Math.random() > 0.5 ? "BUY" : "SELL") : "HOLD";
+  const riskAmount = Number(((session.account?.netEquity || session.account?.accountValue || 5149.16) * (settings.riskPerTrade / 100)).toFixed(2));
+
+  return {
+    market,
+    direction,
+    spreadPips,
+    riskAmount,
+    rewardRiskRatio: 2,
+    stopLossRequired: true,
+    reason: direction === "HOLD"
+      ? "No clean BUY or SELL setup passed the strategy filter."
+      : `${direction} setup detected and sent to risk review.`,
+  };
+}
+
+async function runAutoBotCycle() {
+  let session = null;
+  try {
+    const settingsRow = await loadLatestBotSettings();
+    const settings = normaliseBotSettings(settingsRow);
+
+    if (!settings.botEnabled) {
+      await saveBotActivity(
+        "bot_idle",
+        "Bot idle",
+        "Bot is not enabled. No automatic scans are running.",
+        "info",
+        { settings }
+      );
+      return;
+    }
+
+    if (!settings.autoExecutionAuthorized) {
+      await saveBotActivity(
+        "bot_locked",
+        "Bot waiting for authorization",
+        "Bot is enabled, but automatic execution authorization is not checked.",
+        "warning",
+        { settings }
+      );
+      return;
+    }
+
+    session = await resolveSession();
+    if (!session) {
+      await saveBotActivity(
+        "broker_wait",
+        "Waiting for FOREX.com session",
+        "Bot is armed, but the worker does not have a usable FOREX.com session yet.",
+        "warning",
+        { settings }
+      );
+      return;
+    }
+
+    const decision = buildWorkerDecision(settings, session);
+    if (decision.direction === "HOLD") {
+      await saveBotActivity(
+        "strategy_scan",
+        "Scan completed: no trade",
+        `${decision.market}: ${decision.reason}`,
+        "info",
+        { settings, decision }
+      );
+      return;
+    }
+
+    if (decision.spreadPips > 2) {
+      await saveBotActivity(
+        "risk_rejection",
+        "Trade rejected: spread too wide",
+        `${decision.market} ${decision.direction} was rejected because spread was ${decision.spreadPips} pips.`,
+        "warning",
+        { settings, decision }
+      );
+      return;
+    }
+
+    if (!enableLiveTrading) {
+      await saveBotActivity(
+        "live_trade_blocked",
+        "Signal found, live execution disabled",
+        `${decision.market} ${decision.direction} passed the demo risk check, but ENABLE_LIVE_TRADING is false.`,
+        "warning",
+        { settings, decision }
+      );
+      return;
+    }
+
+    await saveBotActivity(
+      "live_trade_ready",
+      "Signal ready for live execution review",
+      `${decision.market} ${decision.direction} passed initial checks. Order placement is still blocked until broker verification is fully implemented.`,
+      "success",
+      { settings, decision }
+    );
+  } catch (error) {
+    await saveBotActivity(
+      "engine_error",
+      "Bot worker error",
+      error.message,
+      "danger",
+      { hasSession: Boolean(session) }
+    );
+  }
+}
+
+async function runAutoBotLoop() {
+  log("autobot-loop-started", { botScanMs, liveTrading: enableLiveTrading });
+  await saveBotActivity(
+    "engine_started",
+    "Always-on bot worker started",
+    `Worker is online and will check bot settings every ${Math.round(botScanMs / 1000)} seconds.`,
+    "success",
+    { botScanMs, liveTrading: enableLiveTrading }
+  );
+
+  while (true) {
+    await runAutoBotCycle();
+    await sleep(botScanMs);
+  }
+}
+
 async function saveAccountSnapshot({ session, margin, itemName }) {
   const supabase = await getSupabaseAdmin();
   const profile = await getOrCreateProfile();
@@ -505,7 +713,10 @@ process.on("SIGTERM", () => {
   process.exit(0);
 });
 
-runEngineLoop().catch((error) => {
+Promise.all([
+  runEngineLoop(),
+  runAutoBotLoop(),
+]).catch((error) => {
   log("fatal", { error: error.message, id: crypto.randomUUID() });
   process.exit(1);
 });

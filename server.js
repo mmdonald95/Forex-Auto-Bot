@@ -378,6 +378,23 @@ async function getLatestAccountSnapshot() {
   }
 }
 
+async function getSupabaseActivity(limit = 30) {
+  try {
+    const { data } = await supabaseFetch(`/bot_activity?select=*&order=created_at.desc&limit=${limit}`);
+    return (Array.isArray(data) ? data : []).map((event) => ({
+      id: event.id,
+      at: event.created_at,
+      type: event.event_type,
+      title: event.title,
+      message: event.message,
+      level: event.level || "info",
+      details: event.details || {},
+    }));
+  } catch {
+    return [];
+  }
+}
+
 async function getLatestSavedSession() {
   try {
     const { data } = await supabaseFetch("/broker_connections?select=*&broker=eq.FOREX.com_SESSION&order=created_at.desc&limit=5");
@@ -588,6 +605,7 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/activity") {
+    const supabaseEvents = await getSupabaseActivity(30);
     if (!activityEvents.length) {
       logActivity(
         "system",
@@ -599,7 +617,9 @@ async function handleApi(req, res) {
 
     sendJson(res, 200, {
       ok: true,
-      events: activityEvents.slice(0, 30),
+      events: [...supabaseEvents, ...activityEvents]
+        .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
+        .slice(0, 30),
     });
     return;
   }

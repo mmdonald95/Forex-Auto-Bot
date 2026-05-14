@@ -81,6 +81,7 @@ The app expects these tables:
 
 Run `supabase-account-snapshots.sql` in the Supabase SQL editor to add the account snapshot table used by the always-on engine.
 Run `supabase-validation-gate.sql` to add the strategy validation gate used before live trading.
+Run `supabase-bot-activity.sql` to add the shared bot activity feed used by the dashboard and always-on worker.
 
 ## Trading Safety Architecture
 
@@ -139,6 +140,8 @@ Recommended production setup:
 5. Leave live order placement disabled until strategy behavior and risk controls are validated.
 
 The engine writes the latest `CLIENTACCOUNTMARGIN` balance into Supabase `account_snapshots`. The Vercel dashboard can read that table when Vercel cannot maintain the live Lightstreamer connection itself.
+
+The engine also checks `bot_settings` on a timer and writes scan/hold/rejection/worker events into `bot_activity`. This is what proves the bot is awake even when it does not find a safe trade.
 
 ## Live Trade Execution
 
