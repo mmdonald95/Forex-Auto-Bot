@@ -86,6 +86,7 @@ let liveTradingUnlocked = enableLiveTrading;
 let localBotSettings = {
   riskPerTrade: 1,
   dailyStop: 4,
+  rewardRiskRatio: 2,
   maxDailyLossUsd: 100,
   dailyProfitGoalUsd: 50,
   newsFilter: true,
@@ -452,6 +453,39 @@ async function getLatestReconciliation() {
   } catch {
     return null;
   }
+}
+
+async function getLatestBotSettings() {
+  try {
+    const { data } = await supabaseFetch("/bot_settings?select=*&order=updated_at.desc&limit=1");
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row) {
+      return null;
+    }
+    return {
+      riskPerTrade: Number(firstPresent(row.risk_per_trade, row.riskPerTrade, localBotSettings.riskPerTrade)),
+      dailyStop: Number(firstPresent(row.daily_stop, row.dailyStop, localBotSettings.dailyStop)),
+      rewardRiskRatio: Number(firstPresent(row.reward_risk_ratio, row.rewardRiskRatio, localBotSettings.rewardRiskRatio)),
+      maxDailyLossUsd: Number(firstPresent(row.max_daily_loss_usd, row.maxDailyLossUsd, localBotSettings.maxDailyLossUsd)),
+      dailyProfitGoalUsd: Number(firstPresent(row.daily_profit_goal_usd, row.dailyProfitGoalUsd, localBotSettings.dailyProfitGoalUsd)),
+      newsFilter: firstPresent(row.news_filter, row.newsFilter, localBotSettings.newsFilter) !== false,
+      botEnabled: Boolean(firstPresent(row.bot_enabled, row.botEnabled, localBotSettings.botEnabled)),
+      autoExecutionAuthorized: Boolean(firstPresent(row.auto_execution_authorized, row.autoExecutionAuthorized, localBotSettings.autoExecutionAuthorized)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateBotSettings() {
+  const saved = await getLatestBotSettings();
+  if (saved) {
+    localBotSettings = {
+      ...localBotSettings,
+      ...saved,
+    };
+  }
+  return localBotSettings;
 }
 
 async function getSupabaseActivity(limit = 30) {
@@ -1284,6 +1318,7 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/bot/settings") {
     const body = await readBody(req);
+    await hydrateBotSettings();
     const nextBotEnabled = Boolean(body.botEnabled);
     const nextAutoExecutionAuthorized = Boolean(body.autoExecutionAuthorized);
     if (liveTradingUnlocked && nextBotEnabled && !nextAutoExecutionAuthorized) {
@@ -1304,6 +1339,7 @@ async function handleApi(req, res) {
       ...localBotSettings,
       riskPerTrade: Number(body.riskPerTrade ?? localBotSettings.riskPerTrade),
       dailyStop: Number(body.dailyStop ?? localBotSettings.dailyStop),
+      rewardRiskRatio: Number(body.rewardRiskRatio ?? localBotSettings.rewardRiskRatio),
       maxDailyLossUsd: Number(body.maxDailyLossUsd ?? localBotSettings.maxDailyLossUsd),
       dailyProfitGoalUsd: Number(body.dailyProfitGoalUsd ?? localBotSettings.dailyProfitGoalUsd),
       newsFilter: body.newsFilter !== false,
@@ -1313,23 +1349,57 @@ async function handleApi(req, res) {
 
     try {
       const profile = await getOrCreateProfile();
+      const settingsRow = {
+        profile_id: profile.id || null,
+        risk_per_trade: localBotSettings.riskPerTrade,
+        daily_stop: localBotSettings.dailyStop,
+        reward_risk_ratio: localBotSettings.rewardRiskRatio,
+        max_daily_loss_usd: localBotSettings.maxDailyLossUsd,
+        daily_profit_goal_usd: localBotSettings.dailyProfitGoalUsd,
+        news_filter: localBotSettings.newsFilter,
+        bot_enabled: localBotSettings.botEnabled,
+        auto_execution_authorized: localBotSettings.autoExecutionAuthorized,
+        updated_at: new Date().toISOString(),
+      };
       await supabaseFetch("/bot_settings", {
         method: "POST",
         prefer: "return=minimal,resolution=merge-duplicates",
-        body: JSON.stringify([{
-          profile_id: profile.id || null,
-          risk_per_trade: localBotSettings.riskPerTrade,
-          daily_stop: localBotSettings.dailyStop,
-          max_daily_loss_usd: localBotSettings.maxDailyLossUsd,
-          daily_profit_goal_usd: localBotSettings.dailyProfitGoalUsd,
-          news_filter: localBotSettings.newsFilter,
-          bot_enabled: localBotSettings.botEnabled,
-          auto_execution_authorized: localBotSettings.autoExecutionAuthorized,
-          updated_at: new Date().toISOString(),
-        }]),
+        body: JSON.stringify([settingsRow]),
       });
     } catch (error) {
-      console.error("Could not persist bot settings:", error.message);
+      if (!String(error.message).includes("reward_risk_ratio")) {
+        sendJson(res, 500, {
+          ok: false,
+          error: `Could not save bot settings to Supabase: ${error.message}`,
+        });
+        return;
+      }
+
+      try {
+        const profile = await getOrCreateProfile();
+        await supabaseFetch("/bot_settings", {
+          method: "POST",
+          prefer: "return=minimal,resolution=merge-duplicates",
+          body: JSON.stringify([{
+            profile_id: profile.id || null,
+            risk_per_trade: localBotSettings.riskPerTrade,
+            daily_stop: localBotSettings.dailyStop,
+            max_daily_loss_usd: localBotSettings.maxDailyLossUsd,
+            daily_profit_goal_usd: localBotSettings.dailyProfitGoalUsd,
+            news_filter: localBotSettings.newsFilter,
+            bot_enabled: localBotSettings.botEnabled,
+            auto_execution_authorized: localBotSettings.autoExecutionAuthorized,
+            updated_at: new Date().toISOString(),
+          }]),
+        });
+        localBotSettings.rewardRiskRatioNeedsMigration = true;
+      } catch (retryError) {
+        sendJson(res, 500, {
+          ok: false,
+          error: `Could not save bot settings to Supabase: ${retryError.message}`,
+        });
+        return;
+      }
     }
 
     logActivity(
@@ -1347,8 +1417,10 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/live/status") {
+    await hydrateBotSettings();
     sendJson(res, 200, {
       ok: true,
+      settings: localBotSettings,
       liveTradingEnabled: liveTradingUnlocked,
       autoExecutionAuthorized: localBotSettings.autoExecutionAuthorized,
       liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized,
@@ -1363,6 +1435,9 @@ async function handleApi(req, res) {
         maxDailyLossUsd: Number(localBotSettings.maxDailyLossUsd || process.env.MAX_DAILY_LOSS_USD || 100),
         backendMaxDailyLossUsd: Number(process.env.MAX_DAILY_LOSS_USD || 100),
         dailyProfitGoalUsd: Number(localBotSettings.dailyProfitGoalUsd || 0),
+        riskPerTrade: Number(localBotSettings.riskPerTrade || 1),
+        dailyStop: Number(localBotSettings.dailyStop || 4),
+        rewardRiskRatio: Number(localBotSettings.rewardRiskRatio || 2),
       },
     });
     return;

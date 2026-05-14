@@ -36,6 +36,10 @@ const settingsForm = document.querySelector("[data-settings-form]");
 const settingsStatus = document.querySelector("[data-settings-status]");
 const maxDailyLossInput = document.querySelector("[data-max-daily-loss]");
 const dailyProfitGoalInput = document.querySelector("[data-daily-profit-goal]");
+const riskPerTradeInput = settingsForm?.querySelector("[name='riskPerTrade']");
+const dailyStopInput = settingsForm?.querySelector("[name='dailyStop']");
+const rewardRiskRatioInput = settingsForm?.querySelector("[name='rewardRiskRatio']");
+const newsFilterInput = settingsForm?.querySelector("[name='newsFilter']");
 const startBotButtons = document.querySelectorAll("[data-start-bot]");
 const stopBotButtons = document.querySelectorAll("[data-stop-bot]");
 const liveTradingToggle = document.querySelector("[data-live-trading-toggle]");
@@ -858,6 +862,7 @@ function getBotSettingsPayload(botEnabledOverride = null) {
   return {
     riskPerTrade,
     dailyStop: formData.get("dailyStop"),
+    rewardRiskRatio: formData.get("rewardRiskRatio"),
     maxDailyLossUsd: formData.get("maxDailyLossUsd"),
     dailyProfitGoalUsd: formData.get("dailyProfitGoalUsd"),
     newsFilter: formData.has("newsFilter"),
@@ -867,35 +872,46 @@ function getBotSettingsPayload(botEnabledOverride = null) {
 }
 
 async function saveBotSettings(botEnabledOverride = null, statusText = "Saving...") {
+  const buttons = settingsForm.querySelectorAll("button");
+  buttons.forEach((button) => {
+    button.disabled = true;
+  });
   settingsStatus.textContent = statusText;
   const payload = getBotSettingsPayload(botEnabledOverride);
 
-  const response = await fetch("/api/bot/settings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(payload),
-  });
-  const data = await readJsonResponse(response);
+  try {
+    const response = await fetchWithTimeout("/api/bot/settings", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }, 15000);
+    const data = await readJsonResponse(response);
 
-  if (!response.ok || !data.ok) {
-    throw new Error(data.error || "Save failed.");
+    if (!response.ok || !data.ok) {
+      throw new Error(data.error || "Save failed.");
+    }
+
+    const saved = data.settings || payload;
+    const botEnabledInput = settingsForm.querySelector("[name='botEnabled']");
+    if (botEnabledInput) {
+      botEnabledInput.checked = Boolean(saved.botEnabled);
+    }
+
+    settingsStatus.textContent = saved.botEnabled
+      ? saved.autoExecutionAuthorized
+        ? "Bot started and saved."
+        : "Bot started in analysis mode and saved."
+      : "Bot stopped and saved.";
+    await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
+    await loadActivity();
+    return data;
+  } finally {
+    buttons.forEach((button) => {
+      button.disabled = false;
+    });
   }
-
-  const botEnabledInput = settingsForm.querySelector("[name='botEnabled']");
-  if (botEnabledInput) {
-    botEnabledInput.checked = Boolean(payload.botEnabled);
-  }
-
-  settingsStatus.textContent = payload.botEnabled
-    ? payload.autoExecutionAuthorized
-      ? "Bot started."
-      : "Bot started in analysis mode."
-    : "Bot stopped and saved.";
-  await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
-  await loadActivity();
-  return data;
 }
 
 async function setLiveTradingLock(unlocked) {
@@ -1024,6 +1040,19 @@ async function loadLiveTradingStatus() {
     }
     if (autoExecutionAuthorization) {
       autoExecutionAuthorization.checked = Boolean(data.autoExecutionAuthorized);
+    }
+    const savedSettings = data.settings || {};
+    if (riskPerTradeInput && document.activeElement !== riskPerTradeInput && savedSettings.riskPerTrade !== undefined) {
+      riskPerTradeInput.value = savedSettings.riskPerTrade;
+    }
+    if (dailyStopInput && document.activeElement !== dailyStopInput && savedSettings.dailyStop !== undefined) {
+      dailyStopInput.value = savedSettings.dailyStop;
+    }
+    if (rewardRiskRatioInput && document.activeElement !== rewardRiskRatioInput && savedSettings.rewardRiskRatio !== undefined) {
+      rewardRiskRatioInput.value = savedSettings.rewardRiskRatio;
+    }
+    if (newsFilterInput && document.activeElement !== newsFilterInput && savedSettings.newsFilter !== undefined) {
+      newsFilterInput.checked = Boolean(savedSettings.newsFilter);
     }
     if (dailyLossLock) {
       dailyLossLock.textContent = `${money(data.dailyLoss || 0, accountCurrency.textContent || "USD")} / ${money(data.limits.maxDailyLossUsd, accountCurrency.textContent || "USD")}`;
