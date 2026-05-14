@@ -785,6 +785,7 @@ function evaluateMovingAverageStrategy({ marketName, candles, price, balance, ri
     maxRewardRiskRatioMinimum: rewardRiskRatio,
     maxSpreadPips: 2,
   }));
+  const riskViolations = approval.violations || approval.rejections || [];
 
   return {
     market: marketName,
@@ -803,10 +804,10 @@ function evaluateMovingAverageStrategy({ marketName, candles, price, balance, ri
     liveSpread: spreadPips === null ? "--" : Number(spreadPips.toFixed(2)),
     signalStrength: Number(Math.abs((shortMa - longMa) / pipSize).toFixed(2)),
     riskApproved: approval.approved,
-    riskViolations: approval.violations,
+    riskViolations,
     reason: approval.approved
       ? `${direction} setup from real FOREX.com candles and live bid/offer price.`
-      : `No trade: ${approval.violations.join(" ") || "real data did not produce a qualified signal."}`,
+      : `No trade: ${riskViolations.join(" ") || "real data did not produce a qualified signal."}`,
   };
 }
 
