@@ -684,6 +684,132 @@ async function fetchRestPriceSnapshot(session, marketName) {
   };
 }
 
+function pipSizeForMarket(marketName = "") {
+  return marketName.includes("JPY") ? 0.01 : 0.0001;
+}
+
+function average(values = []) {
+  const usable = values.filter((value) => Number.isFinite(value));
+  return usable.length ? usable.reduce((total, value) => total + value, 0) / usable.length : null;
+}
+
+async function fetchRealCandles(session, marketName, maxResults = 80) {
+  const marketInfo = await findForexMarket(session, marketName);
+  const barUrl = new URL(`${apiBase}/market/${marketInfo.marketId}/barhistory`);
+  barUrl.searchParams.set("interval", "MINUTE");
+  barUrl.searchParams.set("span", "15");
+  barUrl.searchParams.set("PriceBars", String(maxResults));
+  barUrl.searchParams.set("PriceType", "MID");
+
+  const { response, data } = await fetchJsonWithTimeout(barUrl.toString(), {
+    method: "GET",
+    headers: forexHeaders(session),
+  }, 15000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com candle request failed (${response.status}).`);
+  }
+
+  const rawBars = data.PriceBars || data.priceBars || [];
+  const partialBar = data.PartialPriceBar || data.partialPriceBar;
+  const combinedBars = [...rawBars];
+  if (partialBar) {
+    const lastBar = combinedBars[combinedBars.length - 1];
+    const lastDate = lastBar?.BarDate || lastBar?.barDate || lastBar?.Timestamp || lastBar?.time;
+    const partialDate = partialBar.BarDate || partialBar.barDate || partialBar.Timestamp || partialBar.time;
+    if (lastDate && partialDate && lastDate === partialDate) {
+      combinedBars[combinedBars.length - 1] = partialBar;
+    } else {
+      combinedBars.push(partialBar);
+    }
+  }
+
+  const bars = normaliseBars(combinedBars);
+  if (bars.length < 30) {
+    throw new Error(`FOREX.com returned only ${bars.length} candle(s) for ${marketName}.`);
+  }
+
+  return { marketInfo, bars };
+}
+
+function evaluateMovingAverageStrategy({ marketName, candles, price, balance, riskPerTrade, rewardRiskRatio }) {
+  const closes = candles.map((bar) => bar.close);
+  const recent = candles.slice(-12);
+  const previousCloses = closes.slice(0, -1);
+  const shortMa = average(closes.slice(-8));
+  const longMa = average(closes.slice(-21));
+  const previousShortMa = average(previousCloses.slice(-8));
+  const previousLongMa = average(previousCloses.slice(-21));
+  const pipSize = pipSizeForMarket(marketName);
+  const liveMid = price?.mid ?? (price?.bid !== null && price?.offer !== null ? (price.bid + price.offer) / 2 : null);
+  const entry = liveMid ?? closes[closes.length - 1];
+  const spread = price?.spread ?? null;
+  const spreadPips = spread === null ? null : spread / pipSize;
+  const riskAmount = Number((balance * (riskPerTrade / 100)).toFixed(2));
+
+  let direction = "HOLD";
+  if (shortMa !== null && longMa !== null && previousShortMa !== null && previousLongMa !== null) {
+    if (shortMa > longMa && shortMa >= previousShortMa && closes[closes.length - 1] > longMa) {
+      direction = "BUY";
+    } else if (shortMa < longMa && shortMa <= previousShortMa && closes[closes.length - 1] < longMa) {
+      direction = "SELL";
+    }
+  }
+
+  const recentLow = Math.min(...recent.map((bar) => bar.low));
+  const recentHigh = Math.max(...recent.map((bar) => bar.high));
+  const minimumStopDistance = pipSize * 10;
+  const stopDistance = direction === "BUY"
+    ? Math.max(entry - recentLow, minimumStopDistance)
+    : direction === "SELL"
+      ? Math.max(recentHigh - entry, minimumStopDistance)
+      : minimumStopDistance;
+  const suggestedStop = direction === "BUY"
+    ? Number((entry - stopDistance).toFixed(marketName.includes("JPY") ? 3 : 5))
+    : direction === "SELL"
+      ? Number((entry + stopDistance).toFixed(marketName.includes("JPY") ? 3 : 5))
+      : null;
+  const suggestedTakeProfit = direction === "BUY"
+    ? Number((entry + stopDistance * rewardRiskRatio).toFixed(marketName.includes("JPY") ? 3 : 5))
+    : direction === "SELL"
+      ? Number((entry - stopDistance * rewardRiskRatio).toFixed(marketName.includes("JPY") ? 3 : 5))
+      : null;
+
+  const approval = approveTrade({
+    direction,
+    riskAmount,
+    rewardRiskRatio,
+    spreadPips: spreadPips ?? 0,
+  }, mergeRiskLimits({
+    maxRiskAmount: Math.max(riskAmount, 1),
+    maxRewardRiskRatioMinimum: rewardRiskRatio,
+    maxSpreadPips: 2,
+  }));
+
+  return {
+    market: marketName,
+    direction: approval.approved ? direction : "HOLD",
+    rawDirection: direction,
+    lastPrice: Number(entry.toFixed(marketName.includes("JPY") ? 3 : 5)),
+    shortMa: Number(shortMa.toFixed(marketName.includes("JPY") ? 3 : 5)),
+    longMa: Number(longMa.toFixed(marketName.includes("JPY") ? 3 : 5)),
+    suggestedStop,
+    suggestedTakeProfit,
+    expectedRisk: riskAmount,
+    expectedProfit: Number((riskAmount * rewardRiskRatio).toFixed(2)),
+    rewardRiskRatio,
+    priceSource: price?.source || "FOREX.com candle history",
+    candleCount: candles.length,
+    liveSpread: spreadPips === null ? "--" : Number(spreadPips.toFixed(2)),
+    signalStrength: Number(Math.abs((shortMa - longMa) / pipSize).toFixed(2)),
+    riskApproved: approval.approved,
+    riskViolations: approval.violations,
+    reason: approval.approved
+      ? `${direction} setup from real FOREX.com candles and live bid/offer price.`
+      : `No trade: ${approval.violations.join(" ") || "real data did not produce a qualified signal."}`,
+  };
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
 
@@ -1218,41 +1344,7 @@ async function handleApi(req, res) {
     const session = await resolveSession(url.searchParams.get("sessionId"));
     const market = url.searchParams.get("market") || "EUR/USD";
     const maxResults = Math.min(Number(url.searchParams.get("maxResults") || 80), 120);
-    const interval = String(url.searchParams.get("interval") || "MINUTE").toUpperCase();
-    const span = Math.max(1, Number(url.searchParams.get("span") || 15));
-    const marketInfo = await findForexMarket(session, market);
-    const barUrl = new URL(`${apiBase}/market/${marketInfo.marketId}/barhistory`);
-    barUrl.searchParams.set("interval", interval);
-    barUrl.searchParams.set("span", String(span));
-    barUrl.searchParams.set("PriceBars", String(maxResults));
-    barUrl.searchParams.set("PriceType", "MID");
-
-    const { response, data } = await fetchJsonWithTimeout(barUrl.toString(), {
-      method: "GET",
-      headers: forexHeaders(session),
-    }, 15000);
-
-    if (!response.ok) {
-      throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com candle request failed (${response.status}).`);
-    }
-
-    const rawBars = data.PriceBars || data.priceBars || [];
-    const partialBar = data.PartialPriceBar || data.partialPriceBar;
-    const combinedBars = [...rawBars];
-    if (partialBar) {
-      const lastBar = combinedBars[combinedBars.length - 1];
-      const lastDate = lastBar?.BarDate || lastBar?.barDate || lastBar?.Timestamp || lastBar?.time;
-      const partialDate = partialBar.BarDate || partialBar.barDate || partialBar.Timestamp || partialBar.time;
-      if (lastDate && partialDate && lastDate === partialDate) {
-        combinedBars[combinedBars.length - 1] = partialBar;
-      } else {
-        combinedBars.push(partialBar);
-      }
-    }
-    const bars = normaliseBars(combinedBars);
-    if (!bars.length) {
-      throw new Error(`FOREX.com returned no real candle data for ${market}.`);
-    }
+    const { marketInfo, bars } = await fetchRealCandles(session, market, maxResults);
 
     logActivity(
       "chart",
@@ -1309,28 +1401,75 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "POST" && (url.pathname === "/api/bot/run" || url.pathname === "/api/bot/scan")) {
+    const body = await readBody(req);
+    const session = await resolveSession(body.sessionId);
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first. Strategy scans require real broker candle data.",
+      });
+      return;
+    }
+
     const scannedMarkets = url.pathname.endsWith("/scan") ? 15 : 1;
-    const decision = {
-      market: "Pending real data",
-      direction: "HOLD",
-      priceSource: "FOREX.com live candle/price data required",
-      candleCount: 0,
-      reason: "No strategy scan was run because synthetic signals are disabled. Connect the real FOREX.com candle and price feed first.",
-    };
+    const markets = scannedMarkets === 1 ? [body.market || "EUR/USD"] : defaultPriceMarkets;
+    const accountSnapshot = await getLatestAccountSnapshot();
+    const balance = pickBalance(accountSnapshot?.raw_margin || accountSnapshot)?.value || 10000;
+    const riskPerTrade = Math.min(Number(body.riskPerTrade || 1), 1);
+    const rewardRiskRatio = Math.max(Number(body.rewardRiskRatio || 2), 1);
+    const priceSnapshots = await getLatestPriceSnapshots(50);
+    const priceByMarket = new Map(priceSnapshots.map((price) => [String(price.market).toUpperCase(), price]));
+
+    const results = await Promise.allSettled(markets.map(async (marketName) => {
+      const { bars } = await fetchRealCandles(session, marketName, 80);
+      const price = priceByMarket.get(String(marketName).toUpperCase()) || null;
+      return evaluateMovingAverageStrategy({
+        marketName,
+        candles: bars,
+        price,
+        balance,
+        riskPerTrade,
+        rewardRiskRatio,
+      });
+    }));
+
+    const decisions = results
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value);
+    const rejected = results
+      .filter((result) => result.status === "rejected")
+      .map((result) => result.reason.message);
+
+    if (!decisions.length) {
+      sendJson(res, 502, {
+        ok: false,
+        error: `FOREX.com returned no usable candle data for the ${scannedMarkets} strategy scan.`,
+        rejected,
+      });
+      return;
+    }
+
+    const tradeCandidates = decisions
+      .filter((item) => item.riskApproved && ["BUY", "SELL"].includes(item.rawDirection))
+      .sort((a, b) => b.signalStrength - a.signalStrength);
+    const decision = tradeCandidates[0] || decisions.sort((a, b) => b.signalStrength - a.signalStrength)[0];
     logActivity(
       "strategy_scan",
-      "Strategy scan paused",
-      `Skipped ${scannedMarkets} pair scan because only real FOREX.com market data can be used.`,
-      "warning",
-      { decision, scannedMarkets }
+      ["BUY", "SELL"].includes(decision.direction) ? `${decision.direction} setup found` : "No qualified trade",
+      ["BUY", "SELL"].includes(decision.direction)
+        ? `Scanned ${decisions.length} real market(s). ${decision.market} produced a risk-approved ${decision.direction} setup.`
+        : `Scanned ${decisions.length} real market(s). No trade passed the strategy and risk filters.`,
+      ["BUY", "SELL"].includes(decision.direction) ? "success" : "info",
+      { decision, decisions, rejected, scannedMarkets }
     );
 
-    sendJson(res, 424, {
-      ok: false,
-      error: "Real FOREX.com candle/price data is required before strategy scans can run. No synthetic signals are generated.",
+    sendJson(res, 200, {
+      ok: true,
       decision,
       selected: decision,
-      scannedMarkets,
+      decisions,
+      rejected,
+      scannedMarkets: decisions.length,
       priceSource: decision.priceSource,
     });
     return;
