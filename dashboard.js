@@ -30,6 +30,7 @@ const dbProfile = document.querySelector("[data-db-profile]");
 const dbBrokers = document.querySelector("[data-db-brokers]");
 const dbSettings = document.querySelector("[data-db-settings]");
 const dbTrades = document.querySelector("[data-db-trades]");
+const dbPrices = document.querySelector("[data-db-prices]");
 const settingsForm = document.querySelector("[data-settings-form]");
 const settingsStatus = document.querySelector("[data-settings-status]");
 const maxDailyLossInput = document.querySelector("[data-max-daily-loss]");
@@ -818,6 +819,9 @@ async function loadSupabaseCheck() {
     dbBrokers.textContent = data.counts?.brokerConnections ?? "--";
     dbSettings.textContent = data.counts?.botSettings ?? "--";
     dbTrades.textContent = data.counts?.tradeLogs ?? "--";
+    if (dbPrices) {
+      dbPrices.textContent = data.counts?.priceSnapshots ?? "--";
+    }
   } catch (error) {
     if (supabaseDbStatus) {
       supabaseDbStatus.textContent = error.message;

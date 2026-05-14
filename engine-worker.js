@@ -16,6 +16,28 @@ const enginePassword = process.env.FOREXCOM_PASSWORD || "";
 const retryMs = Number(process.env.ENGINE_RETRY_MS || 30000);
 const botScanMs = Number(process.env.BOT_SCAN_MS || 60000);
 const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
+const priceSnapshotMinIntervalMs = Number(process.env.PRICE_SNAPSHOT_MIN_INTERVAL_MS || 5000);
+const defaultPriceMarkets = (process.env.PRICE_STREAM_MARKETS || [
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY",
+  "USD/CHF",
+  "AUD/USD",
+  "USD/CAD",
+  "NZD/USD",
+  "EUR/JPY",
+  "GBP/JPY",
+  "EUR/GBP",
+  "EUR/AUD",
+  "AUD/JPY",
+  "CAD/JPY",
+  "GBP/CAD",
+  "GBP/AUD",
+].join(","))
+  .split(",")
+  .map((market) => market.trim())
+  .filter(Boolean)
+  .slice(0, 15);
 
 let supabaseAdminClient;
 let lastActivityTitle = "";
@@ -208,6 +230,46 @@ function normaliseMarginUpdate(update) {
     output[fieldName] = value;
   });
   return output;
+}
+
+function normalisePriceUpdate(update) {
+  const output = {};
+  update.forEachField((fieldName, fieldPosition, value) => {
+    output[fieldName] = value;
+  });
+  return output;
+}
+
+async function findForexMarket(session, marketName) {
+  const clientAccountId = session.account?.clientAccountId;
+  if (!clientAccountId) {
+    throw new Error("Cannot look up market IDs because FOREX.com did not return a clientAccountId.");
+  }
+
+  const searchUrl = new URL(`${apiBase}/market/search`);
+  searchUrl.searchParams.set("SearchByMarketName", "true");
+  searchUrl.searchParams.set("Query", marketName);
+  searchUrl.searchParams.set("MaxResults", "10");
+  searchUrl.searchParams.set("ClientAccountId", String(clientAccountId));
+
+  const data = await getJson(searchUrl.toString(), {
+    UserName: session.username,
+    Session: session.sessionToken,
+  });
+  const markets = data.Markets || data.markets || data.MarketInformation || data.marketInformation || [];
+  const normalizedName = marketName.replace(/\s+/g, "").toUpperCase();
+  const selected = markets.find((item) => String(item.Name || item.MarketName || "").replace(/\s+/g, "").toUpperCase() === normalizedName)
+    || markets.find((item) => String(item.Name || item.MarketName || "").replace(/\s+/g, "").toUpperCase().includes(normalizedName))
+    || markets[0];
+
+  if (!selected) {
+    throw new Error(`FOREX.com returned no market for ${marketName}.`);
+  }
+
+  return {
+    marketId: firstPresent(selected.MarketId, selected.marketId, selected.Id, selected.id),
+    marketName: firstPresent(selected.Name, selected.MarketName, selected.marketName, marketName),
+  };
 }
 
 function pickMarginBalance(margin) {
@@ -522,6 +584,43 @@ async function saveAccountSnapshot({ session, margin, itemName }) {
   });
 }
 
+async function savePriceSnapshot({ session, market, price, itemName }) {
+  const supabase = await getSupabaseAdmin();
+  const profile = await getOrCreateProfile();
+  const bid = parseBrokerNumber(firstPresent(price.Bid, price.bid));
+  const offer = parseBrokerNumber(firstPresent(price.Offer, price.offer));
+  const mid = parseBrokerNumber(firstPresent(price.Price, price.Mid, price.mid));
+  const tickDate = firstPresent(price.TickDate, price.tickDate, price.Updated, price.updated, price.receivedAt);
+
+  if (bid === null && offer === null && mid === null) {
+    return;
+  }
+
+  const { error } = await supabase
+    .from("price_snapshots")
+    .upsert({
+      profile_id: profile.id,
+      broker: "FOREX.com",
+      market_id: String(market.marketId),
+      market_name: market.marketName,
+      bid,
+      offer,
+      mid: mid ?? (bid !== null && offer !== null ? (bid + offer) / 2 : null),
+      spread: bid !== null && offer !== null ? offer - bid : null,
+      audit_id: firstPresent(price.AuditId, price.auditId),
+      tick_date: tickDate,
+      source: `Lightstreamer ${itemName}`,
+      raw_price: price,
+      updated_at: new Date().toISOString(),
+    }, {
+      onConflict: "broker,market_id",
+    });
+
+  if (error) {
+    throw error;
+  }
+}
+
 function streamMargin(session, itemName) {
   return new Promise((resolve, reject) => {
     const ls = require("lightstreamer-client");
@@ -585,6 +684,135 @@ function streamMargin(session, itemName) {
   });
 }
 
+async function resolvePriceMarkets(session) {
+  const results = await Promise.allSettled(defaultPriceMarkets.map((marketName) => findForexMarket(session, marketName)));
+  const markets = results
+    .filter((result) => result.status === "fulfilled" && result.value.marketId)
+    .map((result) => result.value);
+  const failures = results
+    .filter((result) => result.status === "rejected")
+    .map((result) => result.reason.message);
+
+  if (failures.length) {
+    log("price-market-lookup-warning", { failures: failures.slice(0, 5) });
+  }
+
+  return markets;
+}
+
+function streamPrices(session, markets) {
+  return new Promise((resolve, reject) => {
+    const ls = require("lightstreamer-client");
+    const client = new ls.LightstreamerClient(streamingBase, "STREAMINGALL");
+    client.connectionDetails.setUser(session.username);
+    client.connectionDetails.setPassword(session.sessionToken);
+
+    const byItemName = new Map(markets.map((market) => [`PRICE.${market.marketId}`, market]));
+    const latestByItem = new Map();
+    const lastSavedByItem = new Map();
+    const fields = [
+      "MarketId",
+      "TickDate",
+      "Bid",
+      "Offer",
+      "Price",
+      "High",
+      "Low",
+      "Change",
+      "Direction",
+      "AuditId",
+      "StatusSummary",
+    ];
+    const subscription = new ls.Subscription("MERGE", [...byItemName.keys()], fields);
+    subscription.setDataAdapter("PRICES");
+    subscription.setRequestedSnapshot("yes");
+
+    const startupTimeout = setTimeout(() => {
+      client.disconnect();
+      reject(new Error("Timed out waiting for FOREX.com PRICES updates."));
+    }, 30000);
+
+    subscription.addListener({
+      onItemUpdate(update) {
+        clearTimeout(startupTimeout);
+        const itemName = update.getItemName();
+        const market = byItemName.get(itemName);
+        const previous = latestByItem.get(itemName) || {};
+        const price = {
+          ...previous,
+          ...normalisePriceUpdate(update),
+          itemName,
+          receivedAt: new Date().toISOString(),
+        };
+        latestByItem.set(itemName, price);
+        const lastSavedAt = lastSavedByItem.get(itemName) || 0;
+        if (Date.now() - lastSavedAt < priceSnapshotMinIntervalMs) {
+          return;
+        }
+        lastSavedByItem.set(itemName, Date.now());
+        savePriceSnapshot({ session, market, price, itemName }).catch((error) => {
+          log("price-snapshot-save-error", { market: market?.marketName, error: error.message });
+        });
+      },
+      onSubscriptionError(code, message) {
+        clearTimeout(startupTimeout);
+        client.disconnect();
+        reject(new Error(`PRICES subscription error ${code}: ${message}`));
+      },
+    });
+
+    client.addListener({
+      onStatusChange(status) {
+        log("price-lightstreamer-status", { status, markets: markets.length });
+        if (String(status).startsWith("DISCONNECTED")) {
+          clearTimeout(startupTimeout);
+          reject(new Error(`Price Lightstreamer disconnected with status ${status}.`));
+        }
+      },
+    });
+
+    client.connect();
+    client.subscribe(subscription);
+  });
+}
+
+async function runPriceLoop() {
+  log("price-engine-started", { markets: defaultPriceMarkets });
+  while (true) {
+    try {
+      const session = await resolveSession();
+      if (!session) {
+        log("price-no-session", { retryMs });
+        await sleep(retryMs);
+        continue;
+      }
+
+      const markets = await resolvePriceMarkets(session);
+      if (!markets.length) {
+        throw new Error("No FOREX.com markets could be resolved for price streaming.");
+      }
+
+      await saveBotActivity(
+        "market_data",
+        "Live price stream starting",
+        `Subscribing to ${markets.length} FOREX.com markets through Lightstreamer PRICES.`,
+        "success",
+        { markets }
+      );
+      await streamPrices(session, markets);
+    } catch (error) {
+      log("price-engine-error", { error: error.message, retryMs });
+      await saveBotActivity(
+        "market_data_error",
+        "Live price stream error",
+        error.message,
+        "danger"
+      );
+      await sleep(retryMs);
+    }
+  }
+}
+
 async function runEngineLoop() {
   log("engine-started", {
     mode: engineUsername ? "env credentials" : "latest saved website session",
@@ -644,6 +872,7 @@ process.on("SIGTERM", () => {
 
 Promise.all([
   runEngineLoop(),
+  runPriceLoop(),
   runAutoBotLoop(),
 ]).catch((error) => {
   log("fatal", { error: error.message, id: crypto.randomUUID() });

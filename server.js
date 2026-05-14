@@ -77,6 +77,24 @@ let localBotSettings = {
   autoExecutionAuthorized: false
 };
 
+const defaultPriceMarkets = [
+  "EUR/USD",
+  "GBP/USD",
+  "USD/JPY",
+  "USD/CHF",
+  "AUD/USD",
+  "USD/CAD",
+  "NZD/USD",
+  "EUR/JPY",
+  "GBP/JPY",
+  "EUR/GBP",
+  "EUR/AUD",
+  "AUD/JPY",
+  "CAD/JPY",
+  "GBP/CAD",
+  "GBP/AUD",
+];
+
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -377,6 +395,40 @@ async function getLatestAccountSnapshot() {
   }
 }
 
+async function getLatestPriceSnapshots(limit = 50) {
+  try {
+    const { data } = await supabaseFetch(`/price_snapshots?select=*&broker=eq.FOREX.com&order=updated_at.desc&limit=${limit}`);
+    const seen = new Set();
+    return (Array.isArray(data) ? data : [])
+      .filter((row) => {
+        const key = row.market_id || row.market_name;
+        if (!key || seen.has(key)) {
+          return false;
+        }
+        seen.add(key);
+        return true;
+      })
+      .map((row) => {
+        const bid = parseBrokerNumber(row.bid);
+        const offer = parseBrokerNumber(row.offer);
+        const mid = parseBrokerNumber(row.mid);
+        return {
+          market: row.market_name || row.market_id,
+          marketId: row.market_id,
+          bid,
+          offer,
+          mid: mid ?? (bid !== null && offer !== null ? (bid + offer) / 2 : null),
+          spread: bid !== null && offer !== null ? offer - bid : null,
+          tickDate: row.tick_date,
+          updatedAt: row.updated_at,
+          source: row.source || "FOREX.com Lightstreamer PRICES",
+        };
+      });
+  } catch {
+    return [];
+  }
+}
+
 async function getSupabaseActivity(limit = 30) {
   try {
     const { data } = await supabaseFetch(`/bot_activity?select=*&order=created_at.desc&limit=${limit}`);
@@ -579,6 +631,56 @@ function generateLiveDataRequiredSignal(body = {}) {
     status: "live_data_required",
     reason: "Real FOREX.com candle and price data is required before this strategy can produce a trade signal.",
     createdAt: new Date().toISOString()
+  };
+}
+
+function latestTickPrice(data) {
+  const ticks = data.PriceTicks || data.priceTicks || [];
+  const latest = Array.isArray(ticks) ? ticks[ticks.length - 1] : null;
+  return {
+    price: parseBrokerNumber(firstPresent(latest?.Price, latest?.price)),
+    tickDate: firstPresent(latest?.TickDate, latest?.tickDate),
+  };
+}
+
+async function fetchLatestTick(session, marketId, priceType) {
+  const tickUrl = new URL(`${apiBase}/market/${marketId}/tickhistorybefore`);
+  tickUrl.searchParams.set("maxResults", "1");
+  tickUrl.searchParams.set("toTimeStampUTC", String(Date.now()));
+  tickUrl.searchParams.set("priceType", priceType);
+
+  const { response, data } = await fetchJsonWithTimeout(tickUrl.toString(), {
+    method: "GET",
+    headers: forexHeaders(session),
+  }, 12000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com tick request failed (${response.status}).`);
+  }
+
+  return latestTickPrice(data);
+}
+
+async function fetchRestPriceSnapshot(session, marketName) {
+  const marketInfo = await findForexMarket(session, marketName);
+  const [bidTick, offerTick, midTick] = await Promise.all([
+    fetchLatestTick(session, marketInfo.marketId, "BID"),
+    fetchLatestTick(session, marketInfo.marketId, "ASK"),
+    fetchLatestTick(session, marketInfo.marketId, "MID"),
+  ]);
+  const bid = bidTick.price;
+  const offer = offerTick.price;
+  const mid = midTick.price ?? (bid !== null && offer !== null ? (bid + offer) / 2 : null);
+  return {
+    market: marketInfo.marketName,
+    marketId: marketInfo.marketId,
+    bid,
+    offer,
+    mid,
+    spread: bid !== null && offer !== null ? offer - bid : null,
+    tickDate: offerTick.tickDate || bidTick.tickDate || midTick.tickDate || null,
+    updatedAt: new Date().toISOString(),
+    source: "FOREX.com tickhistorybefore",
   };
 }
 
@@ -842,6 +944,7 @@ async function handleApi(req, res) {
       botSettings: await countSupabaseRows("bot_settings"),
       tradeLogs: await countSupabaseRows("trade_logs"),
       accountSnapshots: await countSupabaseRows("account_snapshots"),
+      priceSnapshots: await countSupabaseRows("price_snapshots"),
     };
     sendJson(res, 200, { ok: true, profile, counts });
     return;
@@ -1040,17 +1143,65 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/prices") {
-    logActivity(
-      "market_data",
-      "Live prices unavailable",
-      "No synthetic price data was returned. FOREX.com live bid/offer prices must come from the always-on Lightstreamer PRICES worker.",
-      "warning"
-    );
-    sendJson(res, 503, {
-      ok: false,
-      prices: [],
-      error: "Live FOREX.com bid/offer prices are not connected yet. No fake prices are shown.",
-      source: "FOREX.com Lightstreamer PRICES required",
+    const snapshotPrices = await getLatestPriceSnapshots(50);
+    if (snapshotPrices.length) {
+      const newest = snapshotPrices
+        .map((price) => Date.parse(price.updatedAt || price.tickDate || 0))
+        .filter(Number.isFinite)
+        .sort((a, b) => b - a)[0];
+      const stale = newest ? Date.now() - newest > 120000 : true;
+      sendJson(res, 200, {
+        ok: true,
+        prices: snapshotPrices,
+        source: "FOREX.com Lightstreamer PRICES via Supabase",
+        warning: stale ? "Price snapshots are older than 2 minutes. Confirm the Railway worker is running." : undefined,
+      });
+      return;
+    }
+
+    const session = await resolveSession(url.searchParams.get("sessionId"));
+    if (!session) {
+      sendJson(res, 401, {
+        ok: false,
+        prices: [],
+        error: "Connect to FOREX.com first. Live bid/offer prices require a broker session.",
+      });
+      return;
+    }
+
+    const markets = String(url.searchParams.get("markets") || defaultPriceMarkets.join(","))
+      .split(",")
+      .map((market) => market.trim())
+      .filter(Boolean)
+      .slice(0, 15);
+    const results = await Promise.allSettled(markets.map((market) => fetchRestPriceSnapshot(session, market)));
+    const prices = results
+      .filter((result) => result.status === "fulfilled")
+      .map((result) => result.value)
+      .filter((price) => price.bid !== null || price.offer !== null || price.mid !== null);
+
+    if (!prices.length) {
+      logActivity(
+        "market_data",
+        "Live prices unavailable",
+        "FOREX.com returned no bid/offer prices from Lightstreamer snapshots or REST tick history.",
+        "warning",
+        { errors: results.filter((result) => result.status === "rejected").map((result) => result.reason.message).slice(0, 5) }
+      );
+      sendJson(res, 502, {
+        ok: false,
+        prices: [],
+        error: "FOREX.com did not return live bid/offer prices. Confirm the Railway worker is deployed and the price_snapshots table exists.",
+        source: "FOREX.com PRICES",
+      });
+      return;
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      prices,
+      source: "FOREX.com tickhistorybefore",
+      warning: "Using real broker tick history because no Lightstreamer price snapshots are saved yet.",
     });
     return;
   }
