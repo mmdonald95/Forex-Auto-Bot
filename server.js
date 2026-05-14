@@ -65,7 +65,6 @@ const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
 const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
 const sessions = new Map();
-const demoPositions = [];
 const activityEvents = [];
 let liveTradingUnlocked = enableLiveTrading;
 let localBotSettings = {
@@ -100,7 +99,7 @@ registerStrategy({
     longWindow: 21,
     minimumRewardRisk: 2
   },
-  generateSignal: generateDemoSignal
+  generateSignal: generateLiveDataRequiredSignal
 });
 
 function loadEnv(filePath) {
@@ -465,37 +464,58 @@ async function resolveSession(sessionId) {
   return sessions.get(sessionId) || await getLatestSavedSession();
 }
 
-function demoPriceRows() {
-  const base = [
-    ["EUR/USD", 1.08124],
-    ["GBP/USD", 1.27485],
-    ["USD/JPY", 156.42],
-    ["USD/CHF", 0.9062],
-    ["AUD/USD", 0.6618],
-    ["USD/CAD", 1.3665],
-    ["NZD/USD", 0.6041],
-    ["EUR/GBP", 0.8483],
-    ["EUR/JPY", 169.15],
-    ["GBP/JPY", 199.42],
-    ["AUD/JPY", 103.54],
-    ["CAD/JPY", 114.48],
-    ["EUR/CHF", 0.9799],
-    ["GBP/CHF", 1.1548],
-    ["AUD/CAD", 0.9042],
-  ];
-  const now = Date.now() / 60000;
-  return base.map(([market, mid], index) => {
-    const drift = Math.sin(now + index) * (market.includes("JPY") ? 0.03 : 0.0003);
-    const spread = market.includes("JPY") ? 0.02 : 0.00018;
-    const liveMid = Number((mid + drift).toFixed(market.includes("JPY") ? 3 : 5));
-    return {
-      market,
-      bid: Number((liveMid - spread / 2).toFixed(market.includes("JPY") ? 3 : 5)),
-      offer: Number((liveMid + spread / 2).toFixed(market.includes("JPY") ? 3 : 5)),
-      mid: liveMid,
-      spread: Number(spread.toFixed(market.includes("JPY") ? 3 : 5)),
-    };
-  });
+function normaliseBars(priceBars = []) {
+  return priceBars
+    .map((bar) => ({
+      BarDate: bar.BarDate || bar.barDate || bar.Date || bar.date,
+      open: parseBrokerNumber(firstPresent(bar.open, bar.Open, bar.OpenPrice)),
+      high: parseBrokerNumber(firstPresent(bar.high, bar.High, bar.HighPrice)),
+      low: parseBrokerNumber(firstPresent(bar.low, bar.Low, bar.LowPrice)),
+      close: parseBrokerNumber(firstPresent(bar.close, bar.Close, bar.ClosePrice)),
+    }))
+    .filter((bar) => [bar.open, bar.high, bar.low, bar.close].every((value) => value !== null));
+}
+
+async function findForexMarket(session, marketName) {
+  if (!session) {
+    throw new Error("Connect to FOREX.com first. Real market data requires a broker session.");
+  }
+
+  const clientAccountId = session.account?.clientAccountId;
+  if (!clientAccountId) {
+    throw new Error("FOREX.com did not return a ClientAccountId for market lookup.");
+  }
+
+  const searchUrl = new URL(`${apiBase}/market/search`);
+  searchUrl.searchParams.set("SearchByMarketName", "true");
+  searchUrl.searchParams.set("Query", marketName);
+  searchUrl.searchParams.set("MaxResults", "10");
+  searchUrl.searchParams.set("ClientAccountId", String(clientAccountId));
+
+  const { response, data } = await fetchJsonWithTimeout(searchUrl.toString(), {
+    method: "GET",
+    headers: forexHeaders(session),
+  }, 12000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com market search failed (${response.status}).`);
+  }
+
+  const markets = data.Markets || data.markets || data.MarketInformation || data.marketInformation || [];
+  const normalizedName = marketName.replace(/\s+/g, "").toUpperCase();
+  const selected = markets.find((item) => String(item.Name || item.MarketName || "").replace(/\s+/g, "").toUpperCase() === normalizedName)
+    || markets.find((item) => String(item.Name || item.MarketName || "").replace(/\s+/g, "").toUpperCase().includes(normalizedName))
+    || markets[0];
+
+  if (!selected) {
+    throw new Error(`FOREX.com returned no tradable market for ${marketName}.`);
+  }
+
+  return {
+    marketId: firstPresent(selected.MarketId, selected.marketId, selected.Id, selected.id),
+    marketName: firstPresent(selected.Name, selected.MarketName, selected.marketName, marketName),
+    raw: selected,
+  };
 }
 
 function readBody(req) {
@@ -551,42 +571,13 @@ function serveStatic(req, res) {
   fs.createReadStream(filePath).pipe(res);
 }
 
-function generateDemoSignal(body = {}) {
-  const market = body.market || "EUR/USD";
-  const balance = Number(body.balance || 10000);
-  const riskPercent = Number(body.riskPercent || 1);
-  const rewardRiskRatio = Number(body.rewardRiskRatio || 2);
-
-  const direction = Math.random() > 0.5 ? "BUY" : "SELL";
-  const entry = Number((1.07 + Math.random() * 0.04).toFixed(5));
-  const stopDistance = 0.002;
-  const takeProfitDistance = stopDistance * rewardRiskRatio;
-
-  const stopLoss =
-    direction === "BUY"
-      ? Number((entry - stopDistance).toFixed(5))
-      : Number((entry + stopDistance).toFixed(5));
-
-  const takeProfit =
-    direction === "BUY"
-      ? Number((entry + takeProfitDistance).toFixed(5))
-      : Number((entry - takeProfitDistance).toFixed(5));
-
-  const riskAmount = Number((balance * (riskPercent / 100)).toFixed(2));
-  const expectedProfit = Number((riskAmount * rewardRiskRatio).toFixed(2));
-
+function generateLiveDataRequiredSignal(body = {}) {
   return {
     id: crypto.randomUUID(),
-    market,
-    direction,
-    entry,
-    stopLoss,
-    takeProfit,
-    riskAmount,
-    expectedProfit,
-    rewardRiskRatio,
-    status: "demo_signal",
-    reason: "Demo signal generated. Live trading remains disabled unless configured separately.",
+    market: body.market || "EUR/USD",
+    direction: "HOLD",
+    status: "live_data_required",
+    reason: "Real FOREX.com candle and price data is required before this strategy can produce a trade signal.",
     createdAt: new Date().toISOString()
   };
 }
@@ -1051,161 +1042,141 @@ async function handleApi(req, res) {
   if (req.method === "GET" && url.pathname === "/api/forexcom/prices") {
     logActivity(
       "market_data",
-      "Market prices refreshed",
-      "Updated the Top-15 bid/offer price board.",
-      "info"
+      "Live prices unavailable",
+      "No synthetic price data was returned. FOREX.com live bid/offer prices must come from the always-on Lightstreamer PRICES worker.",
+      "warning"
     );
-    sendJson(res, 200, {
-      ok: true,
-      prices: demoPriceRows(),
-      source: "dashboard price board fallback",
-      warning: "FOREX.com live price streaming should run from the always-on backend; this Vercel route keeps the board usable while that worker is connected.",
+    sendJson(res, 503, {
+      ok: false,
+      prices: [],
+      error: "Live FOREX.com bid/offer prices are not connected yet. No fake prices are shown.",
+      source: "FOREX.com Lightstreamer PRICES required",
     });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/markets") {
+    const session = await resolveSession(url.searchParams.get("sessionId"));
     const query = String(url.searchParams.get("query") || "EUR/USD").toUpperCase();
-    const prices = demoPriceRows()
-      .filter((price) => price.market.includes(query.replace(/[^A-Z/]/g, "")) || query.includes(price.market))
-      .map((price, index) => ({
-        Name: price.market,
-        MarketName: price.market,
-        MarketId: 400000 + index,
-        MarketType: "Currency",
-        Currency: price.market.slice(0, 3),
-      }));
-    sendJson(res, 200, { ok: true, markets: prices.length ? prices : [] });
+    const market = await findForexMarket(session, query);
+    sendJson(res, 200, { ok: true, markets: [market.raw] });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/forexcom/candles") {
+    const session = await resolveSession(url.searchParams.get("sessionId"));
     const market = url.searchParams.get("market") || "EUR/USD";
     const maxResults = Math.min(Number(url.searchParams.get("maxResults") || 80), 120);
-    const seed = demoPriceRows().find((price) => price.market === market)?.mid || 1.08;
-    const bars = Array.from({ length: maxResults }, (_, index) => {
-      const wave = Math.sin(index / 4) * 0.0015;
-      const open = seed + wave;
-      const close = open + Math.sin(index / 3) * 0.0007;
-      const high = Math.max(open, close) + 0.0008;
-      const low = Math.min(open, close) - 0.0008;
-      return {
-        BarDate: new Date(Date.now() - (maxResults - index) * 15 * 60 * 1000).toISOString(),
-        open: Number(open.toFixed(5)),
-        high: Number(high.toFixed(5)),
-        low: Number(low.toFixed(5)),
-        close: Number(close.toFixed(5)),
-        Open: Number(open.toFixed(5)),
-        High: Number(high.toFixed(5)),
-        Low: Number(low.toFixed(5)),
-        Close: Number(close.toFixed(5)),
-      };
-    });
+    const interval = String(url.searchParams.get("interval") || "MINUTE").toUpperCase();
+    const span = Math.max(1, Number(url.searchParams.get("span") || 15));
+    const marketInfo = await findForexMarket(session, market);
+    const barUrl = new URL(`${apiBase}/market/${marketInfo.marketId}/barhistory`);
+    barUrl.searchParams.set("interval", interval);
+    barUrl.searchParams.set("span", String(span));
+    barUrl.searchParams.set("PriceBars", String(maxResults));
+    barUrl.searchParams.set("PriceType", "MID");
+
+    const { response, data } = await fetchJsonWithTimeout(barUrl.toString(), {
+      method: "GET",
+      headers: forexHeaders(session),
+    }, 15000);
+
+    if (!response.ok) {
+      throw new Error(data.Message || data.ErrorMessage || data.error || `FOREX.com candle request failed (${response.status}).`);
+    }
+
+    const rawBars = data.PriceBars || data.priceBars || [];
+    const partialBar = data.PartialPriceBar || data.partialPriceBar;
+    const combinedBars = [...rawBars];
+    if (partialBar) {
+      const lastBar = combinedBars[combinedBars.length - 1];
+      const lastDate = lastBar?.BarDate || lastBar?.barDate || lastBar?.Timestamp || lastBar?.time;
+      const partialDate = partialBar.BarDate || partialBar.barDate || partialBar.Timestamp || partialBar.time;
+      if (lastDate && partialDate && lastDate === partialDate) {
+        combinedBars[combinedBars.length - 1] = partialBar;
+      } else {
+        combinedBars.push(partialBar);
+      }
+    }
+    const bars = normaliseBars(combinedBars);
+    if (!bars.length) {
+      throw new Error(`FOREX.com returned no real candle data for ${market}.`);
+    }
+
     logActivity(
       "chart",
       "Candlestick chart loaded",
-      `Loaded ${bars.length} ${market} candles for chart review.`,
+      `Loaded ${bars.length} real ${marketInfo.marketName} candles from FOREX.com.`,
       "info",
-      { market, count: bars.length }
+      { market, marketId: marketInfo.marketId, count: bars.length, source: "FOREX.com barhistory" }
     );
-    sendJson(res, 200, { ok: true, bars, source: "dashboard candle fallback" });
+    sendJson(res, 200, { ok: true, bars, market: marketInfo, source: "FOREX.com barhistory" });
     return;
   }
 
   if (req.method === "GET" && url.pathname === "/api/demo/positions") {
-    const closed = demoPositions.filter((position) => position.status === "closed");
     sendJson(res, 200, {
       ok: true,
-      positions: demoPositions.filter((position) => position.status !== "closed"),
+      disabled: true,
+      message: "Synthetic demo positions are disabled. Paper trading must be rebuilt from real FOREX.com market data.",
+      positions: [],
       summary: {
-        openCount: demoPositions.filter((position) => position.status !== "closed").length,
-        closedCount: closed.length,
-        realizedProfitLoss: closed.reduce((total, position) => total + Number(position.profitLoss || 0), 0),
+        openCount: 0,
+        closedCount: 0,
+        realizedProfitLoss: 0,
       },
     });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/demo/open") {
-    const body = await readBody(req);
-    const signal = generateDemoSignal(body);
-    demoPositions.push({
-      id: signal.id,
-      market: signal.market,
-      direction: signal.direction,
-      entry: signal.entry,
-      stopLoss: signal.stopLoss,
-      takeProfit: signal.takeProfit,
-      status: "open",
-      openedAt: signal.createdAt,
-    });
     logActivity(
-      "paper_trade",
-      "Paper trade opened",
-      `${signal.direction} ${signal.market} opened in simulated mode with stop ${signal.stopLoss} and target ${signal.takeProfit}.`,
-      "success",
-      { signal }
+      "paper_trade_disabled",
+      "Synthetic paper trade blocked",
+      "Paper trading is disabled until it is connected to real FOREX.com market data.",
+      "warning"
     );
-    sendJson(res, 200, { ok: true, opened: true, signal });
+    sendJson(res, 423, {
+      ok: false,
+      error: "Synthetic paper trading is disabled. Connect real FOREX.com market data before paper trades are created.",
+    });
     return;
   }
 
   if (req.method === "POST" && url.pathname === "/api/demo/mark") {
-    for (const position of demoPositions.filter((item) => item.status !== "closed")) {
-      position.status = "closed";
-      position.closedAt = new Date().toISOString();
-      position.profitLoss = Number(((Math.random() - 0.45) * 20).toFixed(2));
-    }
     logActivity(
-      "paper_trade",
-      "Paper positions marked",
-      "Updated simulated open positions and closed them for demo P/L review.",
-      "info"
+      "paper_trade_disabled",
+      "Synthetic paper marking blocked",
+      "No simulated P/L was generated because fake paper trade marking is disabled.",
+      "warning"
     );
-    sendJson(res, 200, { ok: true });
+    sendJson(res, 423, {
+      ok: false,
+      error: "Synthetic P/L marking is disabled. No fake trade results are generated.",
+    });
     return;
   }
 
   if (req.method === "POST" && (url.pathname === "/api/bot/run" || url.pathname === "/api/bot/scan")) {
-    const body = await readBody(req);
     const scannedMarkets = url.pathname.endsWith("/scan") ? 15 : 1;
-    const signal = generateDemoSignal({
-      ...body,
-      balance: body.balance || 5149.16,
-      riskPercent: body.riskPerTrade || 1,
-      rewardRiskRatio: body.rewardRiskRatio || 2,
-    });
-    const direction = Math.random() > 0.35 ? "HOLD" : signal.direction;
     const decision = {
-      market: signal.market,
-      direction,
-      lastPrice: signal.entry,
-      shortMa: Number((signal.entry + 0.0004).toFixed(5)),
-      longMa: Number((signal.entry - 0.0002).toFixed(5)),
-      suggestedStop: signal.stopLoss,
-      suggestedTakeProfit: signal.takeProfit,
-      expectedRisk: signal.riskAmount,
-      expectedProfit: signal.expectedProfit,
-      rewardRiskRatio: signal.rewardRiskRatio,
-      priceSource: "FOREX.com-compatible dashboard analysis",
-      candleCount: 80,
-      liveSpread: 1.2,
-      reason: direction === "HOLD"
-        ? "No clean trade. Capital protection rule says wait."
-        : "Demo strategy signal only. Risk Manager must approve before any order can be sent.",
+      market: "Pending real data",
+      direction: "HOLD",
+      priceSource: "FOREX.com live candle/price data required",
+      candleCount: 0,
+      reason: "No strategy scan was run because synthetic signals are disabled. Connect the real FOREX.com candle and price feed first.",
     };
     logActivity(
       "strategy_scan",
-      direction === "HOLD" ? "No trade found" : `${direction} signal found`,
-      direction === "HOLD"
-        ? `Scanned ${scannedMarkets} pair(s). Risk-first rules said to wait.`
-        : `Scanned ${scannedMarkets} pair(s). ${signal.market} produced a ${direction} setup for risk review.`,
-      direction === "HOLD" ? "info" : "success",
+      "Strategy scan paused",
+      `Skipped ${scannedMarkets} pair scan because only real FOREX.com market data can be used.`,
+      "warning",
       { decision, scannedMarkets }
     );
 
-    sendJson(res, 200, {
-      ok: true,
+    sendJson(res, 424, {
+      ok: false,
+      error: "Real FOREX.com candle/price data is required before strategy scans can run. No synthetic signals are generated.",
       decision,
       selected: decision,
       scannedMarkets,
@@ -1216,7 +1187,7 @@ async function handleApi(req, res) {
 
   if (req.method === "POST" && url.pathname === "/api/signal") {
     const body = await readBody(req);
-    const signal = generateDemoSignal(body);
+    const signal = generateLiveDataRequiredSignal(body);
 
     const limits = mergeRiskLimits(body.riskLimits || {});
     const approval = approveTrade({
@@ -1224,7 +1195,7 @@ async function handleApi(req, res) {
         strategyName: "moving-average-profit-rule",
         market: signal.market,
         direction: signal.direction,
-        entryPrice: signal.entry,
+        entryPrice: signal.entryPrice,
         stopLoss: signal.stopLoss,
         takeProfit: signal.takeProfit,
         riskPercentage: body.riskPercent || 1,

@@ -408,43 +408,6 @@ function normaliseBotSettings(row = {}) {
   };
 }
 
-function buildWorkerDecision(settings, session) {
-  const markets = [
-    "EUR/USD",
-    "GBP/USD",
-    "USD/JPY",
-    "USD/CHF",
-    "AUD/USD",
-    "USD/CAD",
-    "NZD/USD",
-    "EUR/JPY",
-    "GBP/JPY",
-    "AUD/JPY",
-    "EUR/GBP",
-    "EUR/CHF",
-    "GBP/CHF",
-    "AUD/CAD",
-    "CAD/JPY",
-  ];
-  const market = markets[Math.floor(Date.now() / botScanMs) % markets.length];
-  const spreadPips = Number((0.7 + Math.random() * 2.4).toFixed(2));
-  const hasSignal = Math.random() > 0.78;
-  const direction = hasSignal ? (Math.random() > 0.5 ? "BUY" : "SELL") : "HOLD";
-  const riskAmount = Number(((session.account?.netEquity || session.account?.accountValue || 5149.16) * (settings.riskPerTrade / 100)).toFixed(2));
-
-  return {
-    market,
-    direction,
-    spreadPips,
-    riskAmount,
-    rewardRiskRatio: 2,
-    stopLossRequired: true,
-    reason: direction === "HOLD"
-      ? "No clean BUY or SELL setup passed the strategy filter."
-      : `${direction} setup detected and sent to risk review.`,
-  };
-}
-
 async function runAutoBotCycle() {
   let session = null;
   try {
@@ -485,46 +448,12 @@ async function runAutoBotCycle() {
       return;
     }
 
-    const decision = buildWorkerDecision(settings, session);
-    if (decision.direction === "HOLD") {
-      await saveBotActivity(
-        "strategy_scan",
-        "Scan completed: no trade",
-        `${decision.market}: ${decision.reason}`,
-        "info",
-        { settings, decision }
-      );
-      return;
-    }
-
-    if (decision.spreadPips > 2) {
-      await saveBotActivity(
-        "risk_rejection",
-        "Trade rejected: spread too wide",
-        `${decision.market} ${decision.direction} was rejected because spread was ${decision.spreadPips} pips.`,
-        "warning",
-        { settings, decision }
-      );
-      return;
-    }
-
-    if (!enableLiveTrading) {
-      await saveBotActivity(
-        "live_trade_blocked",
-        "Signal found, live execution disabled",
-        `${decision.market} ${decision.direction} passed the demo risk check, but ENABLE_LIVE_TRADING is false.`,
-        "warning",
-        { settings, decision }
-      );
-      return;
-    }
-
     await saveBotActivity(
-      "live_trade_ready",
-      "Signal ready for live execution review",
-      `${decision.market} ${decision.direction} passed initial checks. Order placement is still blocked until broker verification is fully implemented.`,
-      "success",
-      { settings, decision }
+      "strategy_wait",
+      "Waiting for real strategy data",
+      "Bot is armed, but automatic strategy execution is paused until real FOREX.com price stream/candle data is connected. No synthetic trades are generated.",
+      "warning",
+      { settings, liveTrading: enableLiveTrading, clientAccountId: session.account?.clientAccountId }
     );
   } catch (error) {
     await saveBotActivity(

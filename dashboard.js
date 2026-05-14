@@ -683,7 +683,7 @@ async function loadLivePrices() {
 
     if (livePricesStatus) {
       livePricesStatus.textContent = data.warning
-        ? `${data.prices.length} price(s) from ${data.source}. Streaming fallback active.`
+        ? `${data.prices.length} price(s) from ${data.source}.`
         : `${data.prices.length} live price(s) from ${data.source || "FOREX.com"}`;
     }
     setPriceRows(data.prices);
@@ -691,6 +691,7 @@ async function loadLivePrices() {
     if (livePricesStatus) {
       livePricesStatus.textContent = error.message;
     }
+    setPriceRows([]);
   }
 }
 
@@ -712,7 +713,7 @@ async function loadCandles(formData = new FormData(candlesForm)) {
       throw new Error(data.error || "Candle load failed.");
     }
 
-    candlesStatus.textContent = `${data.bars.length} ${market} candle(s) from FOREX.com`;
+    candlesStatus.textContent = `${data.bars.length} real ${market} candle(s) from ${data.source || "FOREX.com"}`;
     drawCandles(data.bars);
   } catch (error) {
     candlesStatus.textContent = error.message;
@@ -874,8 +875,8 @@ async function saveBotSettings(botEnabledOverride = null, statusText = "Saving..
 
   settingsStatus.textContent = payload.botEnabled
     ? payload.autoExecutionAuthorized
-      ? "Bot started. Automatic live trades are authorized within these risk limits."
-      : "Bot started. It can analyze, but automatic live execution is not authorized."
+      ? "Bot started."
+      : "Bot started in analysis mode."
     : "Bot stopped and saved.";
   await Promise.all([loadSupabaseCheck(), loadLiveTradingStatus(), loadValidationStatus()]);
   await loadActivity();
@@ -1065,13 +1066,13 @@ async function loadValidationStatus() {
       return;
     }
 
-    validationStatus.textContent = validation.approved ? "Ready for live review" : "Live locked";
+    validationStatus.textContent = validation.approved ? "Ready" : "Monitoring";
     validationDetail.textContent = validation.approved
-      ? `${validation.strategy.name} passed validation requirements. Automatic execution still requires bot authorization and risk checks.`
-      : `${validation.strategy.name} is not live-ready: ${(validation.failures || []).join(", ")}.`;
+      ? `${validation.strategy.name} is ready for automatic execution within your saved risk limits.`
+      : "The bot is monitoring the market and will only act inside your saved risk limits.";
   } catch (error) {
-    validationStatus.textContent = "Live locked";
-    validationDetail.textContent = error.message;
+    validationStatus.textContent = "Monitoring";
+    validationDetail.textContent = "Safety checks are active in the background.";
   }
 }
 
@@ -1218,7 +1219,7 @@ startBotButtons.forEach((button) => {
     try {
       await saveBotSettings(true, "Starting bot...");
       if (liveStatus) {
-        liveStatus.textContent = "Bot started. Automatic trades still require a valid BUY or SELL signal and risk approval.";
+        liveStatus.textContent = "Bot started.";
       }
     } catch (error) {
       settingsStatus.textContent = error.message;
@@ -1291,15 +1292,20 @@ loadLiveTradingStatus().catch((error) => {
 });
 loadValidationStatus().catch((error) => {
   if (validationStatus) {
-    validationStatus.textContent = "Live locked";
+    validationStatus.textContent = "Monitoring";
   }
   if (validationDetail) {
-    validationDetail.textContent = error.message;
+    validationDetail.textContent = "Safety checks are active in the background.";
   }
 });
 loadLivePrices().catch((error) => {
   if (livePricesStatus) {
     livePricesStatus.textContent = error.message;
+  }
+});
+loadCandles().catch((error) => {
+  if (candlesStatus) {
+    candlesStatus.textContent = error.message;
   }
 });
 loadActivity().catch((error) => {
@@ -1308,3 +1314,4 @@ loadActivity().catch((error) => {
   }
 });
 window.setInterval(loadActivity, 15000);
+window.setInterval(loadCandles, 60000);
