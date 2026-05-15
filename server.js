@@ -1276,6 +1276,7 @@ async function submitForexLiveTrade({ session, decision, quantity }) {
     TradingAccountId: Number(tradingAccountId),
     Status: null,
     isTrade: true,
+    Reference: "StoneX API",
     Source: "StoneX API",
     OrderReference: `ForexAutoBot-${Date.now()}`,
   };

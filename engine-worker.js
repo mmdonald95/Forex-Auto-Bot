@@ -494,6 +494,35 @@ async function runHostedStrategyScan(settings) {
   return data;
 }
 
+async function runHostedLiveTrade(decision, settings) {
+  const response = await fetch(`${appBaseUrl}/api/live/trade`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      source: "railway-engine-worker",
+      decision,
+      quantity: Number(process.env.LIVE_TRADE_QUANTITY || process.env.MAX_LIVE_TRADE_QUANTITY || 1000),
+      settings: {
+        riskPerTrade: settings.riskPerTrade,
+        dailyStop: settings.dailyStop,
+        rewardRiskRatio: settings.rewardRiskRatio,
+        maxDailyLossUsd: settings.maxDailyLossUsd,
+        dailyProfitGoalUsd: settings.dailyProfitGoalUsd,
+      },
+    }),
+  });
+
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `Live trade request failed (${response.status}).`);
+  }
+  return data;
+}
+
 async function runAutoBotCycle() {
   let session = null;
   try {
@@ -537,11 +566,28 @@ async function runAutoBotCycle() {
     const scan = await runHostedStrategyScan(settings);
     const decision = scan.decision || scan.selected || {};
     const isTradeSignal = ["BUY", "SELL"].includes(decision.direction);
+    if (isTradeSignal && enableLiveTrading) {
+      const tradeResult = await runHostedLiveTrade(decision, settings);
+      await saveBotActivity(
+        "live_trade_sent",
+        `${decision.direction} order sent`,
+        `${decision.market} ${decision.direction} order was sent through the hosted execution endpoint. FOREX.com response and account reconciliation were recorded.`,
+        "success",
+        {
+          settings,
+          clientAccountId: session.account?.clientAccountId,
+          decision,
+          tradeResult,
+        }
+      );
+      return;
+    }
+
     await saveBotActivity(
       isTradeSignal ? "strategy_signal" : "strategy_hold",
       isTradeSignal ? `${decision.direction} setup found` : "No qualified trade",
       isTradeSignal
-        ? `${decision.market} produced a ${decision.direction} setup from real FOREX.com data. Live order placement is still blocked until the order execution layer is wired and verified.`
+        ? `${decision.market} produced a ${decision.direction} setup from real FOREX.com data. ENABLE_LIVE_TRADING is false on this worker, so no real order was sent.`
         : decision.reason || "The strategy scanned real FOREX.com data and chose not to trade.",
       isTradeSignal ? "warning" : "info",
       {
