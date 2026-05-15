@@ -81,7 +81,7 @@ const supabaseUrl = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
 const supabaseRestUrl = (process.env.SUPABASE_REST_URL || (supabaseUrl ? `${supabaseUrl}/rest/v1` : "")).replace(/\/$/, "");
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_PRIVATE_KEY || "";
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || "";
-const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
+const enableLiveTrading = envBool(process.env.ENABLE_LIVE_TRADING);
 const sessions = new Map();
 const activityEvents = [];
 let liveTradingUnlocked = enableLiveTrading;
@@ -238,6 +238,10 @@ function parseBrokerNumber(value) {
 
   const number = Number(String(value).replace(/[$,\s]/g, ""));
   return Number.isFinite(number) ? number : null;
+}
+
+function envBool(value) {
+  return ["true", "1", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 }
 
 function findTradingAccounts(account) {
@@ -2217,7 +2221,7 @@ async function handleApi(req, res) {
     sendJson(res, 200, {
       connected: false,
       mode: "safe_demo",
-      liveTradingEnabled: process.env.ENABLE_LIVE_TRADING === "true",
+      liveTradingEnabled: envBool(process.env.ENABLE_LIVE_TRADING),
       message: "Server is running. Broker connection is not active in this safe Vercel fallback."
     });
     return;

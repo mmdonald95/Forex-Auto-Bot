@@ -15,7 +15,7 @@ const engineUsername = process.env.FOREXCOM_USERNAME || "";
 const enginePassword = process.env.FOREXCOM_PASSWORD || "";
 const retryMs = Number(process.env.ENGINE_RETRY_MS || 30000);
 const botScanMs = Number(process.env.BOT_SCAN_MS || 60000);
-const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
+const enableLiveTrading = envBool(process.env.ENABLE_LIVE_TRADING);
 const appBaseUrl = (process.env.APP_BASE_URL || process.env.PUBLIC_APP_URL || "https://forex-auto-bot.vercel.app").replace(/\/$/, "");
 const priceSnapshotMinIntervalMs = Number(process.env.PRICE_SNAPSHOT_MIN_INTERVAL_MS || 5000);
 const defaultPriceMarkets = (process.env.PRICE_STREAM_MARKETS || [
@@ -156,6 +156,10 @@ function parseBrokerNumber(value) {
 
   const number = Number(String(value).replace(/[$,\s]/g, ""));
   return Number.isFinite(number) ? number : null;
+}
+
+function envBool(value) {
+  return ["true", "1", "yes", "on"].includes(String(value || "").trim().toLowerCase());
 }
 
 function findTradingAccounts(account) {
