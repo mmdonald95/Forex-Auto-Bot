@@ -851,8 +851,8 @@ function getBotSettingsPayload(botEnabledOverride = null) {
   const liveModeUnlocked = Boolean(liveTradingToggle?.checked);
   const autoExecutionAuthorized = formData.has("autoExecutionAuthorized");
 
-  if (botEnabled && riskPerTrade > 1) {
-    throw new Error("Live trading risk is capped at 1%. Set Risk per trade to 1 or lower, then start the bot.");
+  if (botEnabled && riskPerTrade > 2) {
+    throw new Error("Live trading risk is capped at 2%. Set Risk per trade to 2 or lower, then start the bot.");
   }
 
   if (botEnabled && liveModeUnlocked && !autoExecutionAuthorized) {

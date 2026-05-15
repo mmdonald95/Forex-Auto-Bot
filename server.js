@@ -2093,7 +2093,7 @@ async function handleApi(req, res) {
     const markets = scannedMarkets === 1 ? [body.market || "EUR/USD"] : defaultPriceMarkets;
     const accountSnapshot = await getLatestAccountSnapshot();
     const balance = pickBalance(accountSnapshot?.raw_margin || accountSnapshot)?.value || 10000;
-    const riskPerTrade = Math.min(Number(body.riskPerTrade || 1), 1);
+    const riskPerTrade = Math.min(Number(body.riskPerTrade || 1), 2);
     const rewardRiskRatio = Math.max(Number(body.rewardRiskRatio || 2), 1);
     const priceSnapshots = await getLatestPriceSnapshots(50);
     const priceByMarket = new Map(priceSnapshots.map((price) => [String(price.market).toUpperCase(), price]));
