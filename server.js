@@ -73,6 +73,8 @@ const apiBase = (process.env.FOREXCOM_API_BASE || "https://ciapi.cityindex.com/T
 const appVersion = process.env.FOREXCOM_APP_VERSION || "1";
 const appComments = process.env.FOREXCOM_APP_COMMENTS || "Forex Auto Bot";
 const forexComAppKey = process.env.FOREXCOM_APP_KEY || "";
+const forexComUsername = process.env.FOREXCOM_USERNAME || "";
+const forexComPassword = process.env.FOREXCOM_PASSWORD || "";
 const defaultProfileName = process.env.DEFAULT_PROFILE_NAME || "Marcello Gambino";
 const defaultProfileEmail = process.env.DEFAULT_PROFILE_EMAIL || "marcello@example.com";
 const supabaseUrl = (process.env.SUPABASE_URL || "").replace(/\/$/, "");
@@ -438,6 +440,7 @@ async function getLatestPriceSnapshots(limit = 50) {
           spread: bid !== null && offer !== null ? offer - bid : null,
           tickDate: row.tick_date,
           updatedAt: row.updated_at,
+          auditId: row.audit_id,
           source: row.source || "FOREX.com Lightstreamer PRICES",
         };
       });
@@ -531,6 +534,73 @@ async function getLatestSavedSession() {
   return null;
 }
 
+async function loginWithServerCredentials() {
+  if (!forexComUsername || !forexComPassword || !forexComAppKey) {
+    return null;
+  }
+
+  const { response, data } = await fetchJsonWithTimeout(`${apiBase}/session`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "User-Agent": "Forex Auto Bot",
+    },
+    body: JSON.stringify({
+      UserName: forexComUsername,
+      Password: forexComPassword,
+      AppVersion: appVersion,
+      AppComments: appComments,
+      AppKey: forexComAppKey,
+    }),
+  }, 12000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || data.raw || `FOREX.com login failed (${response.status}).`);
+  }
+
+  const sessionToken = firstPresent(data.Session, data.SessionId, data.SessionToken);
+  if (!sessionToken) {
+    throw new Error("FOREX.com did not return a session token.");
+  }
+
+  let account = {};
+  try {
+    const accountBase = apiBase.replace(/\/TradingAPI$/i, "");
+    const accountResponse = await fetchJsonWithTimeout(`${accountBase}/v2/userAccount/ClientAndTradingAccount`, {
+      method: "GET",
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "Forex Auto Bot",
+        UserName: forexComUsername,
+        Session: sessionToken,
+      },
+    }, 12000);
+    if (accountResponse.response.ok) {
+      account = safeAccountSummary(accountResponse.data, forexComUsername);
+    }
+  } catch (error) {
+    console.error("FOREX.com env account detail load failed:", error.message);
+  }
+
+  const session = {
+    username: forexComUsername,
+    appKey: forexComAppKey,
+    account: {
+      ...data,
+      ...account,
+      logonUserName: account.logonUserName || data.UserName || data.userName || forexComUsername,
+      clientAccountId: account.clientAccountId || data.ClientAccountId || data.clientAccountId || data.AccountId || data.accountId || null,
+      clientAccountCurrency: account.clientAccountCurrency || data.ClientAccountCurrency || data.clientAccountCurrency || "USD",
+    },
+    brokerSession: data,
+    createdAt: new Date().toISOString(),
+  };
+
+  await saveBrokerSession(forexComUsername, forexComAppKey, data, session.account);
+  return session;
+}
+
 async function saveBrokerSession(username, appKey, brokerSession, account) {
   const sessionToken = firstPresent(brokerSession?.Session, brokerSession?.SessionId, brokerSession?.SessionToken);
   if (!sessionToken) {
@@ -572,7 +642,20 @@ function forexHeaders(session) {
 }
 
 async function resolveSession(sessionId) {
-  return sessions.get(sessionId) || await getLatestSavedSession();
+  if (sessionId && sessions.has(sessionId)) {
+    return sessions.get(sessionId);
+  }
+
+  try {
+    const credentialSession = await loginWithServerCredentials();
+    if (credentialSession) {
+      return credentialSession;
+    }
+  } catch (error) {
+    console.error("FOREX.com env credential login failed:", error.message);
+  }
+
+  return getLatestSavedSession();
 }
 
 function normaliseBars(priceBars = []) {
@@ -1022,6 +1105,209 @@ function evaluateMovingAverageStrategy({ marketName, candles, price, balance, ri
   };
 }
 
+function normaliseTradeDirection(direction = "") {
+  const value = String(direction).trim().toUpperCase();
+  return value === "BUY" || value === "SELL" ? value : null;
+}
+
+function oppositeTradeDirection(direction = "") {
+  return normaliseTradeDirection(direction) === "BUY" ? "sell" : "buy";
+}
+
+function decimalsForMarket(marketName = "") {
+  return String(marketName).includes("JPY") ? 3 : 5;
+}
+
+function normaliseMarketKey(value = "") {
+  return String(value).replace(/\s+/g, "").toUpperCase();
+}
+
+function roundMarketPrice(value, marketName) {
+  const parsed = parseBrokerNumber(value);
+  return parsed === null ? null : Number(parsed.toFixed(decimalsForMarket(marketName)));
+}
+
+function liveEntryPrice(direction, price = {}) {
+  return direction === "BUY" ? price.offer : price.bid;
+}
+
+function isFreshTimestamp(value, maxAgeMs = 120000) {
+  const timestamp = Date.parse(value || "");
+  return Number.isFinite(timestamp) && Date.now() - timestamp <= maxAgeMs;
+}
+
+async function getTodaysLiveBotTradeCount() {
+  try {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const query = `/bot_activity?select=id&event_type=eq.live_trade_sent&created_at=gte.${encodeURIComponent(startOfDay.toISOString())}`;
+    const { data } = await supabaseFetch(query);
+    return Array.isArray(data) ? data.length : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function saveSupabaseBotActivity(type, title, message, level = "info", details = {}) {
+  logActivity(type, title, message, level, details);
+  try {
+    const profile = await getOrCreateProfile();
+    await supabaseFetch("/bot_activity", {
+      method: "POST",
+      prefer: "return=minimal",
+      body: JSON.stringify([{
+        profile_id: profile.id || null,
+        event_type: type,
+        title,
+        message,
+        level,
+        details,
+      }]),
+    });
+  } catch (error) {
+    console.error("Could not save bot activity:", error.message);
+  }
+}
+
+async function submitForexLiveTrade({ session, decision, quantity }) {
+  const marketName = decision.market || decision.marketName;
+  const direction = normaliseTradeDirection(decision.direction || decision.rawDirection);
+  if (!marketName || !direction) {
+    throw new Error("Live order rejected: missing market or BUY/SELL direction.");
+  }
+
+  const priceSnapshots = await getLatestPriceSnapshots(50);
+  const price = priceSnapshots.find((item) => normaliseMarketKey(item.market) === normaliseMarketKey(marketName));
+  if (!price) {
+    throw new Error(`Live order rejected: no live FOREX.com bid/offer snapshot for ${marketName}.`);
+  }
+
+  if (!isFreshTimestamp(price.updatedAt || price.tickDate)) {
+    throw new Error(`Live order rejected: ${marketName} price snapshot is stale. Confirm the Railway worker is running.`);
+  }
+
+  if (price.bid === null || price.offer === null || !price.auditId) {
+    throw new Error(`Live order rejected: ${marketName} is missing bid, offer, or AuditId from the live price stream.`);
+  }
+
+  const pipSize = pipSizeForMarket(marketName);
+  const spreadPips = price.spread === null ? null : price.spread / pipSize;
+  const maxSpreadPips = Number(process.env.MAX_LIVE_SPREAD_PIPS || 2);
+  if (spreadPips === null || spreadPips > maxSpreadPips) {
+    throw new Error(`Live order rejected: spread is ${spreadPips === null ? "unknown" : spreadPips.toFixed(2)} pips, above the ${maxSpreadPips} pip limit.`);
+  }
+
+  const stopLoss = roundMarketPrice(decision.suggestedStop || decision.stopLoss, marketName);
+  const takeProfit = roundMarketPrice(decision.suggestedTakeProfit || decision.takeProfit, marketName);
+  if (stopLoss === null || takeProfit === null) {
+    throw new Error("Live order rejected: stop loss and take profit are required.");
+  }
+
+  const entry = liveEntryPrice(direction, price);
+  if (entry === null) {
+    throw new Error("Live order rejected: entry price could not be calculated from bid/offer.");
+  }
+
+  if (direction === "BUY" && !(stopLoss < entry && takeProfit > entry)) {
+    throw new Error("Live order rejected: BUY stop loss must be below entry and take profit must be above entry.");
+  }
+  if (direction === "SELL" && !(stopLoss > entry && takeProfit < entry)) {
+    throw new Error("Live order rejected: SELL stop loss must be above entry and take profit must be below entry.");
+  }
+
+  const maxQuantity = Number(process.env.MAX_LIVE_TRADE_QUANTITY || 1000);
+  const requestedQuantity = Number(quantity || process.env.LIVE_TRADE_QUANTITY || maxQuantity);
+  const safeQuantity = Math.min(requestedQuantity, maxQuantity);
+  if (!Number.isFinite(safeQuantity) || safeQuantity <= 0) {
+    throw new Error("Live order rejected: invalid live trade quantity.");
+  }
+
+  const reconciliation = await reconcileForexAccount(session);
+  const maxOpenPositions = Number(process.env.MAX_OPEN_POSITIONS || 1);
+  if (reconciliation.summary.openPositionCount >= maxOpenPositions) {
+    throw new Error(`Live order rejected: ${reconciliation.summary.openPositionCount} open position(s), max allowed is ${maxOpenPositions}.`);
+  }
+
+  const maxDailyLiveTrades = Number(process.env.MAX_DAILY_LIVE_TRADES || 1);
+  const todaysBotTrades = await getTodaysLiveBotTradeCount();
+  if (todaysBotTrades >= maxDailyLiveTrades) {
+    throw new Error(`Live order rejected: daily bot trade cap reached (${todaysBotTrades}/${maxDailyLiveTrades}).`);
+  }
+
+  const tradingAccountId = getPrimaryTradingAccountId(session.account);
+  if (!tradingAccountId) {
+    throw new Error("Live order rejected: FOREX.com did not return a TradingAccountId.");
+  }
+
+  const marketInfo = decision.marketId
+    ? { marketId: decision.marketId, marketName }
+    : await findForexMarket(session, marketName);
+
+  const orderRequest = {
+    IfDone: [{
+      Stop: {
+        Guaranteed: false,
+        Direction: oppositeTradeDirection(direction),
+        Quantity: safeQuantity,
+        Applicability: "GTC",
+        TriggerPrice: stopLoss,
+        OrderId: 0,
+      },
+      Limit: {
+        Direction: oppositeTradeDirection(direction),
+        Quantity: safeQuantity,
+        Applicability: "GTC",
+        TriggerPrice: takeProfit,
+        OrderId: 0,
+      },
+    }],
+    Direction: direction.toLowerCase(),
+    BidPrice: price.bid,
+    OfferPrice: price.offer,
+    AuditId: price.auditId,
+    AutoRollover: false,
+    MarketId: Number(marketInfo.marketId),
+    MarketName: marketInfo.marketName || marketName,
+    OrderId: 0,
+    Currency: null,
+    Quantity: safeQuantity,
+    QuoteId: null,
+    PositionMethodId: 1,
+    TradingAccountId: Number(tradingAccountId),
+    Status: null,
+    isTrade: true,
+    Source: "StoneX API",
+    OrderReference: `ForexAutoBot-${Date.now()}`,
+  };
+
+  const { response, data } = await fetchJsonWithTimeout(`${apiBase}/order/newtradeorder`, {
+    method: "POST",
+    headers: {
+      ...forexHeaders(session),
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(orderRequest),
+  }, 15000);
+
+  if (!response.ok) {
+    throw new Error(data.Message || data.ErrorMessage || data.error || data.raw || `FOREX.com order failed (${response.status}).`);
+  }
+
+  const afterReconciliation = await reconcileForexAccount(session);
+  await saveReconciliation(session, afterReconciliation);
+
+  return {
+    orderRequest: {
+      ...orderRequest,
+      AuditId: price.auditId,
+    },
+    brokerResponse: data,
+    price,
+    spreadPips: Number(spreadPips.toFixed(2)),
+    reconciliation: afterReconciliation.summary,
+  };
+}
+
 async function handleApi(req, res) {
   const url = new URL(req.url, "http://localhost");
 
@@ -1418,13 +1704,18 @@ async function handleApi(req, res) {
 
   if (req.method === "GET" && url.pathname === "/api/live/status") {
     await hydrateBotSettings();
+    const orderExecutionWired = true;
     sendJson(res, 200, {
       ok: true,
       settings: localBotSettings,
       liveTradingEnabled: liveTradingUnlocked,
       autoExecutionAuthorized: localBotSettings.autoExecutionAuthorized,
-      liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized,
+      liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized && orderExecutionWired,
       botArmed: liveTradingUnlocked && localBotSettings.botEnabled && localBotSettings.autoExecutionAuthorized,
+      orderExecutionWired,
+      executionMessage: orderExecutionWired
+        ? "Live order execution is wired. Real orders still require a valid signal, stop loss, take profit, fresh FOREX.com prices, and risk approval."
+        : "The bot can scan real markets, but automatic FOREX.com order placement is not wired yet.",
       dailyLoss: 0,
       dailyProfit: 0,
       limits: {
@@ -1464,8 +1755,10 @@ async function handleApi(req, res) {
       ok: true,
       liveTradingEnabled: liveTradingUnlocked,
       autoExecutionAuthorized: localBotSettings.autoExecutionAuthorized,
-      liveExecutionReady: enableLiveTrading && liveTradingUnlocked && localBotSettings.autoExecutionAuthorized,
+      liveExecutionReady: false,
       botArmed: liveTradingUnlocked && localBotSettings.botEnabled && localBotSettings.autoExecutionAuthorized,
+      orderExecutionWired: true,
+      executionMessage: "Live order execution is wired. The backend still must have ENABLE_LIVE_TRADING=true before real orders can be sent.",
       warning: enableLiveTrading
         ? null
         : "Live mode can be unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
@@ -1536,28 +1829,119 @@ async function handleApi(req, res) {
   }
 
   if (req.method === "POST" && url.pathname === "/api/live/trade") {
-    logActivity(
-      "live_trade_rejected",
-      "Live trade blocked",
-      !liveTradingUnlocked
+    const body = await readBody(req);
+    await hydrateBotSettings();
+
+    const decision = body.decision || body.signal || body;
+    const direction = normaliseTradeDirection(decision.direction || decision.rawDirection);
+    const rejection = !enableLiveTrading
+      ? "Backend live execution flag is off. Set ENABLE_LIVE_TRADING=true only when you are ready for real orders."
+      : !liveTradingUnlocked
         ? "Live trading is locked in the app."
-        : !localBotSettings.autoExecutionAuthorized
-          ? "Automatic live execution has not been authorized."
-          : enableLiveTrading
-            ? "Strategy validation and broker order verification are not fully wired."
-            : "Backend live execution flag is still off.",
-      "warning"
-    );
-    sendJson(res, 423, {
-      ok: false,
-      error: !liveTradingUnlocked
-        ? "Live trading is locked in the app. Turn on Live trading unlocked first."
-        : !localBotSettings.autoExecutionAuthorized
-          ? "Automatic live execution has not been authorized. Check the authorization box when starting the bot."
-          : enableLiveTrading
-            ? "Live execution is blocked until strategy validation and broker order verification are fully wired."
-            : "Live mode is unlocked in the app, but real order execution still requires ENABLE_LIVE_TRADING=true on the backend.",
+        : !localBotSettings.botEnabled
+          ? "Bot is stopped."
+          : !localBotSettings.autoExecutionAuthorized
+            ? "Automatic live execution has not been authorized in Bot controls."
+            : !direction
+              ? "Live order rejected: no BUY or SELL signal."
+              : null;
+
+    if (rejection) {
+      await saveSupabaseBotActivity(
+        "live_trade_rejected",
+        "Live trade rejected",
+        rejection,
+        "warning",
+        { decision }
+      );
+      sendJson(res, 423, { ok: false, error: rejection });
+      return;
+    }
+
+    const limits = mergeRiskLimits({
+      maxRiskAmount: Number(localBotSettings.maxDailyLossUsd || process.env.MAX_DAILY_LOSS_USD || 100),
+      maxRewardRiskRatioMinimum: Number(localBotSettings.rewardRiskRatio || 2),
+      maxSpreadPips: Number(process.env.MAX_LIVE_SPREAD_PIPS || 2),
+      requireStopLoss: true,
     });
+    const approval = approveTrade({
+      direction,
+      stopLoss: decision.suggestedStop || decision.stopLoss,
+      takeProfit: decision.suggestedTakeProfit || decision.takeProfit,
+      riskAmount: decision.expectedRisk,
+      rewardRiskRatio: decision.rewardRiskRatio || localBotSettings.rewardRiskRatio,
+      spreadPips: decision.liveSpread === "--" ? null : decision.liveSpread,
+    }, limits);
+    const approvalViolations = approval.violations || approval.rejections || [];
+    if (!approval.approved) {
+      await saveSupabaseBotActivity(
+        "live_trade_rejected",
+        "Risk manager rejected trade",
+        approvalViolations.join(" ") || "Risk manager rejected the trade.",
+        "warning",
+        { decision, approval }
+      );
+      sendJson(res, 422, {
+        ok: false,
+        error: approvalViolations.join(" ") || "Risk manager rejected the trade.",
+        approval,
+      });
+      return;
+    }
+
+    const session = await resolveSession(body.sessionId);
+    if (!session) {
+      await saveSupabaseBotActivity(
+        "live_trade_rejected",
+        "FOREX.com session missing",
+        "Live order rejected because the backend could not create or load a FOREX.com session.",
+        "danger",
+        { decision }
+      );
+      sendJson(res, 401, {
+        ok: false,
+        error: "Connect to FOREX.com first or set FOREXCOM_USERNAME, FOREXCOM_PASSWORD, and FOREXCOM_APP_KEY on the backend.",
+      });
+      return;
+    }
+
+    try {
+      const tradeResult = await submitForexLiveTrade({
+        session,
+        decision,
+        quantity: body.quantity,
+      });
+      await saveSupabaseBotActivity(
+        "live_trade_sent",
+        `${direction} order sent`,
+        `${decision.market} ${direction} order sent to FOREX.com with ${tradeResult.orderRequest.Quantity} units, stop ${tradeResult.orderRequest.IfDone[0].Stop.TriggerPrice}, and take profit ${tradeResult.orderRequest.IfDone[0].Limit.TriggerPrice}.`,
+        "success",
+        {
+          decision,
+          brokerResponse: tradeResult.brokerResponse,
+          spreadPips: tradeResult.spreadPips,
+          reconciliation: tradeResult.reconciliation,
+        }
+      );
+      sendJson(res, 200, {
+        ok: true,
+        message: "Live order sent to FOREX.com and account was reconciled afterward.",
+        decision,
+        result: tradeResult,
+      });
+    } catch (error) {
+      await saveSupabaseBotActivity(
+        "live_trade_rejected",
+        "Live order not sent",
+        error.message,
+        "danger",
+        { decision }
+      );
+      sendJson(res, 422, {
+        ok: false,
+        error: error.message,
+      });
+    }
     return;
   }
 

@@ -16,6 +16,7 @@ const enginePassword = process.env.FOREXCOM_PASSWORD || "";
 const retryMs = Number(process.env.ENGINE_RETRY_MS || 30000);
 const botScanMs = Number(process.env.BOT_SCAN_MS || 60000);
 const enableLiveTrading = process.env.ENABLE_LIVE_TRADING === "true";
+const appBaseUrl = (process.env.APP_BASE_URL || process.env.PUBLIC_APP_URL || "https://forex-auto-bot.vercel.app").replace(/\/$/, "");
 const priceSnapshotMinIntervalMs = Number(process.env.PRICE_SNAPSHOT_MIN_INTERVAL_MS || 5000);
 const defaultPriceMarkets = (process.env.PRICE_STREAM_MARKETS || [
   "EUR/USD",
@@ -464,10 +465,33 @@ function normaliseBotSettings(row = {}) {
     autoExecutionAuthorized: Boolean(firstPresent(row.auto_execution_authorized, row.autoExecutionAuthorized, false)),
     riskPerTrade: Number(firstPresent(row.risk_per_trade, row.riskPerTrade, 1)),
     dailyStop: Number(firstPresent(row.daily_stop, row.dailyStop, 4)),
+    rewardRiskRatio: Number(firstPresent(row.reward_risk_ratio, row.rewardRiskRatio, 2)),
     maxDailyLossUsd: Number(firstPresent(row.max_daily_loss_usd, row.maxDailyLossUsd, 100)),
     dailyProfitGoalUsd: Number(firstPresent(row.daily_profit_goal_usd, row.dailyProfitGoalUsd, 50)),
     newsFilter: firstPresent(row.news_filter, row.newsFilter, true) !== false,
   };
+}
+
+async function runHostedStrategyScan(settings) {
+  const response = await fetch(`${appBaseUrl}/api/bot/scan`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    },
+    body: JSON.stringify({
+      riskPerTrade: settings.riskPerTrade,
+      dailyStop: settings.dailyStop,
+      rewardRiskRatio: settings.rewardRiskRatio,
+    }),
+  });
+
+  const text = await response.text();
+  const data = text ? JSON.parse(text) : {};
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || `Strategy scan failed (${response.status}).`);
+  }
+  return data;
 }
 
 async function runAutoBotCycle() {
@@ -510,12 +534,23 @@ async function runAutoBotCycle() {
       return;
     }
 
+    const scan = await runHostedStrategyScan(settings);
+    const decision = scan.decision || scan.selected || {};
+    const isTradeSignal = ["BUY", "SELL"].includes(decision.direction);
     await saveBotActivity(
-      "strategy_wait",
-      "Waiting for real strategy data",
-      "Bot is armed, but automatic strategy execution is paused until real FOREX.com price stream/candle data is connected. No synthetic trades are generated.",
-      "warning",
-      { settings, liveTrading: enableLiveTrading, clientAccountId: session.account?.clientAccountId }
+      isTradeSignal ? "strategy_signal" : "strategy_hold",
+      isTradeSignal ? `${decision.direction} setup found` : "No qualified trade",
+      isTradeSignal
+        ? `${decision.market} produced a ${decision.direction} setup from real FOREX.com data. Live order placement is still blocked until the order execution layer is wired and verified.`
+        : decision.reason || "The strategy scanned real FOREX.com data and chose not to trade.",
+      isTradeSignal ? "warning" : "info",
+      {
+        settings,
+        liveTrading: enableLiveTrading,
+        clientAccountId: session.account?.clientAccountId,
+        decision,
+        scannedMarkets: scan.scannedMarkets,
+      }
     );
   } catch (error) {
     await saveBotActivity(

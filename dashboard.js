@@ -1021,7 +1021,9 @@ async function loadLiveTradingStatus() {
 
     liveStatus.textContent = data.liveTradingEnabled
       ? data.botArmed
-        ? `Live mode is unlocked and bot is armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
+        ? data.liveExecutionReady
+          ? `Live mode is unlocked and bot is armed. Max ${data.limits.maxLiveTradeQuantity} units, ${data.limits.maxDailyLiveTrades}/day, ${data.limits.maxLiveSpreadPips} pip spread.`
+          : data.executionMessage || "Bot is armed for scanning, but live order execution is not wired yet."
         : "Live mode is unlocked, but the bot is stopped. Click Start Bot when ready."
       : "Live mode is locked in the app. Turn on Live trading unlocked to allow live review.";
     if (botMode) {
