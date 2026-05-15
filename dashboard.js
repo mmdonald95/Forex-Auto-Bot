@@ -1259,7 +1259,7 @@ async function executeLiveTrade(event) {
 }
 
 on(runBotButton, "click", async () => {
-  await runBotRequest("/api/bot/run", "Running EUR/USD strategy analysis...");
+  await runBotRequest("/api/bot/run", "Running single-pair EUR/USD strategy test...");
 });
 
 startBotButtons.forEach((button) => {
@@ -1267,7 +1267,7 @@ startBotButtons.forEach((button) => {
     try {
       await saveBotSettings(true, "Starting bot...");
       if (liveStatus) {
-        liveStatus.textContent = "Bot started.";
+        liveStatus.textContent = "Bot started. Automatic mode scans the top 15 pairs.";
       }
     } catch (error) {
       settingsStatus.textContent = error.message;
