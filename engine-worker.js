@@ -3,6 +3,7 @@ const crypto = require("node:crypto");
 
 const root = __dirname;
 loadEnv(path.join(root, ".env"));
+installWebSocketRuntime();
 
 const apiBase = (process.env.FOREXCOM_API_BASE || "https://ciapi.cityindex.com/TradingAPI").replace(/\/$/, "");
 const streamingBase = (process.env.FOREXCOM_STREAMING_BASE || "https://push.cityindex.com").replace(/\/$/, "");
@@ -67,6 +68,18 @@ function loadEnv(filePath) {
     if (!process.env[key]) {
       process.env[key] = value;
     }
+  }
+}
+
+function installWebSocketRuntime() {
+  if (typeof globalThis.WebSocket !== "undefined") {
+    return;
+  }
+
+  try {
+    globalThis.WebSocket = require("ws");
+  } catch (error) {
+    log("websocket-polyfill-error", { error: error.message });
   }
 }
 
