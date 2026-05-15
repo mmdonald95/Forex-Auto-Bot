@@ -11,6 +11,7 @@ const appVersion = process.env.FOREXCOM_APP_VERSION || "1";
 const appComments = process.env.FOREXCOM_APP_COMMENTS || "Forex Auto Bot engine";
 const forexComAppKey = process.env.FOREXCOM_APP_KEY || "";
 const supabaseUrl = normaliseSupabaseUrl(process.env.SUPABASE_URL || process.env.SUPABASE_REST_URL || "");
+const supabaseRestUrl = supabaseUrl ? `${supabaseUrl}/rest/v1` : "";
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const engineUsername = process.env.FOREXCOM_USERNAME || "";
 const enginePassword = process.env.FOREXCOM_PASSWORD || "";
@@ -156,6 +157,44 @@ async function getSupabaseAdmin() {
   }
 
   return supabaseAdminClient;
+}
+
+async function supabaseRest(pathname, options = {}) {
+  if (!supabaseRestUrl || !supabaseServiceRoleKey) {
+    throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required for Supabase REST calls.");
+  }
+
+  const url = `${supabaseRestUrl}${pathname.startsWith("/") ? pathname : `/${pathname}`}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      ...options,
+      headers: {
+        apikey: supabaseServiceRoleKey,
+        Authorization: `Bearer ${supabaseServiceRoleKey}`,
+        "Content-Type": "application/json",
+        Accept: "application/json",
+        ...(options.headers || {}),
+      },
+    });
+  } catch (error) {
+    throw new Error(`Supabase REST fetch failed for ${url}: ${error.message}`);
+  }
+
+  const text = await response.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = text;
+  }
+
+  if (!response.ok) {
+    const message = data?.message || data?.error || text || response.statusText;
+    throw new Error(`Supabase REST ${response.status} for ${url}: ${message}`);
+  }
+
+  return data;
 }
 
 function firstPresent(...values) {
@@ -443,22 +482,28 @@ async function saveBotActivity(eventType, title, message, level = "info", detail
   lastActivityAt = now;
 
   try {
-    const supabase = await getSupabaseAdmin();
-    const profile = await getOrCreateProfile();
-    const { error } = await supabase
-      .from("bot_activity")
-      .insert({
-        profile_id: profile.id,
+    let profileId = null;
+    try {
+      const profile = await getOrCreateProfile();
+      profileId = profile?.id || null;
+    } catch (profileError) {
+      log("profile-load-warning", { error: profileError.message });
+    }
+
+    await supabaseRest("/bot_activity", {
+      method: "POST",
+      headers: {
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify([{
+        profile_id: profileId,
         event_type: eventType,
         title,
         message,
         level,
         details,
-      });
-
-    if (error) {
-      throw error;
-    }
+      }]),
+    });
   } catch (error) {
     log("bot-activity-save-error", { error: error.message, title });
   }
@@ -647,8 +692,14 @@ async function runAutoBotLoop() {
 }
 
 async function saveAccountSnapshot({ session, margin, itemName }) {
-  const supabase = await getSupabaseAdmin();
-  const profile = await getOrCreateProfile();
+  let profileId = null;
+  try {
+    const profile = await getOrCreateProfile();
+    profileId = profile?.id || null;
+  } catch (profileError) {
+    log("profile-load-warning", { error: profileError.message });
+  }
+
   const balance = pickMarginBalance(margin);
   const primary = getPrimaryTradingAccount(session.account);
   const clientAccountId = session.account.clientAccountId;
@@ -657,10 +708,13 @@ async function saveAccountSnapshot({ session, margin, itemName }) {
     throw new Error("Cannot save account snapshot because no clientAccountId was returned.");
   }
 
-  const { error } = await supabase
-    .from("account_snapshots")
-    .upsert({
-      profile_id: profile.id,
+  await supabaseRest("/account_snapshots?on_conflict=broker,client_account_id", {
+    method: "POST",
+    headers: {
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify([{
+      profile_id: profileId,
       broker: "FOREX.com",
       client_account_id: String(clientAccountId),
       trading_account_id: primary?.tradingAccountId ? String(primary.tradingAccountId) : null,
@@ -671,13 +725,8 @@ async function saveAccountSnapshot({ session, margin, itemName }) {
       raw_margin: margin,
       raw_account: session.account,
       updated_at: new Date().toISOString(),
-    }, {
-      onConflict: "broker,client_account_id",
-    });
-
-  if (error) {
-    throw error;
-  }
+    }]),
+  });
 
   log("account-snapshot-saved", {
     clientAccountId,
@@ -687,8 +736,14 @@ async function saveAccountSnapshot({ session, margin, itemName }) {
 }
 
 async function savePriceSnapshot({ session, market, price, itemName }) {
-  const supabase = await getSupabaseAdmin();
-  const profile = await getOrCreateProfile();
+  let profileId = null;
+  try {
+    const profile = await getOrCreateProfile();
+    profileId = profile?.id || null;
+  } catch (profileError) {
+    log("profile-load-warning", { error: profileError.message });
+  }
+
   const bid = parseBrokerNumber(firstPresent(price.Bid, price.bid));
   const offer = parseBrokerNumber(firstPresent(price.Offer, price.offer));
   const mid = parseBrokerNumber(firstPresent(price.Price, price.Mid, price.mid));
@@ -698,10 +753,13 @@ async function savePriceSnapshot({ session, market, price, itemName }) {
     return;
   }
 
-  const { error } = await supabase
-    .from("price_snapshots")
-    .upsert({
-      profile_id: profile.id,
+  await supabaseRest("/price_snapshots?on_conflict=broker,market_id", {
+    method: "POST",
+    headers: {
+      Prefer: "resolution=merge-duplicates,return=minimal",
+    },
+    body: JSON.stringify([{
+      profile_id: profileId,
       broker: "FOREX.com",
       market_id: String(market.marketId),
       market_name: market.marketName,
@@ -714,13 +772,8 @@ async function savePriceSnapshot({ session, market, price, itemName }) {
       source: `Lightstreamer ${itemName}`,
       raw_price: price,
       updated_at: new Date().toISOString(),
-    }, {
-      onConflict: "broker,market_id",
-    });
-
-  if (error) {
-    throw error;
-  }
+    }]),
+  });
 }
 
 function streamMargin(session, itemName) {
