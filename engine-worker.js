@@ -10,7 +10,7 @@ const streamingBase = (process.env.FOREXCOM_STREAMING_BASE || "https://push.city
 const appVersion = process.env.FOREXCOM_APP_VERSION || "1";
 const appComments = process.env.FOREXCOM_APP_COMMENTS || "Forex Auto Bot engine";
 const forexComAppKey = process.env.FOREXCOM_APP_KEY || "";
-const supabaseUrl = process.env.SUPABASE_URL || "";
+const supabaseUrl = normaliseSupabaseUrl(process.env.SUPABASE_URL || process.env.SUPABASE_REST_URL || "");
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
 const engineUsername = process.env.FOREXCOM_USERNAME || "";
 const enginePassword = process.env.FOREXCOM_PASSWORD || "";
@@ -81,6 +81,10 @@ function installWebSocketRuntime() {
   } catch (error) {
     log("websocket-polyfill-error", { error: error.message });
   }
+}
+
+function normaliseSupabaseUrl(value = "") {
+  return String(value).trim().replace(/\/rest\/v1\/?$/i, "").replace(/\/$/, "");
 }
 
 function log(event, payload = {}) {
